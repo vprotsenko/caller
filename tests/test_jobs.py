@@ -30,14 +30,17 @@ def test_normalize_number_rejects(raw):
 
 # --- dial string / originate command ---------------------------------------------
 
-def test_build_dial_string_default_template():
+def test_build_dial_string_substitutes_gateway():
     assert jobs.build_dial_string(
-        "+380671234567", "sofia/gateway/flysip/{number}"
-    ) == "sofia/gateway/flysip/+380671234567"
+        "+380671234567", gateway="gw_profile_2"
+    ) == "sofia/gateway/gw_profile_2/+380671234567"
 
 
-def test_build_dial_string_loopback_template():
-    assert jobs.build_dial_string("9999", "loopback/{number}/default") == "loopback/9999/default"
+def test_build_dial_string_loopback_template_ignores_gateway():
+    # the loopback override has no {gw}; the gateway arg is harmlessly ignored
+    assert jobs.build_dial_string(
+        "9999", gateway="gw_profile_9", template="loopback/{number}/default"
+    ) == "loopback/9999/default"
 
 
 def test_build_dial_string_rejects_garbage():

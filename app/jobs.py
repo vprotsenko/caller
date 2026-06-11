@@ -19,14 +19,16 @@ import re
 import time
 import uuid as uuid_mod
 
-from . import amd as amd_mod, db, esl, ivr, operators as operators_mod, tts
+from . import (amd as amd_mod, db, esl, gateways, ivr,
+               operators as operators_mod, tts)
 
 logger = logging.getLogger(__name__)
 
 AUDIO_DIR = os.environ.get("AUDIO_DIR", "/app/audio")
-# {number} is substituted; loopback/9999/default in tests (Plan.md §16 level 4)
+# {gw} = gateway of the campaign's SIP profile, {number} = dialled number.
+# Tests override to loopback/{number}/default (no {gw}) — Plan.md §16 level 4.
 DIAL_STRING_TEMPLATE = os.environ.get(
-    "DIAL_STRING_TEMPLATE", "sofia/gateway/flysip/{number}")
+    "DIAL_STRING_TEMPLATE", "sofia/gateway/{gw}/{number}")
 ORIGINATE_TIMEOUT = int(os.environ.get("ORIGINATE_TIMEOUT", "30"))
 # Extra channel vars prepended to every originate. Empty in production (the
 # trunk negotiates codecs); the loopback E2E env sets e.g.
@@ -98,11 +100,12 @@ def status_for(cause, answered):
     return "failed"
 
 
-def build_dial_string(number, template=None):
+def build_dial_string(number, gateway="flysip", template=None):
     num = normalize_number(number)
     if num is None:
         raise ValueError(f"invalid number: {number!r}")
-    return (template or DIAL_STRING_TEMPLATE).format(number=num)
+    # a loopback override template has no {gw}; .format ignores the extra arg
+    return (template or DIAL_STRING_TEMPLATE).format(number=num, gw=gateway)
 
 
 def _originate_vars(call_uuid):
@@ -268,6 +271,28 @@ async def _run_campaign(campaign_id):
             _log("FreeSWITCH недоступний — кампанію зупинено")
             return
 
+        # Materialize the campaign's SIP profile into a FreeSWITCH gateway and
+        # dial through it (Plan.md §3/§8). A loopback override template skips
+        # this (no {gw}); the static .env `flysip` gateway is the fallback.
+        gateway = "flysip"
+        if "{gw}" in DIAL_STRING_TEMPLATE:
+            profile = db.get_profile(campaign["profile_id"])
+            if profile is None:
+                db.set_campaign_status(campaign_id, "stopped",
+                                       error="SIP-профіль не знайдено", finished=True)
+                _log("SIP-профіль не знайдено — кампанію зупинено")
+                return
+            try:
+                gateway, state = await gateways.ensure_gateway(client, profile)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("gateway setup failed")
+                db.set_campaign_status(campaign_id, "stopped",
+                                       error=f"Не вдалося підняти SIP-транк: {exc.__class__.__name__}",
+                                       finished=True)
+                _log("не вдалося підняти SIP-транк — кампанію зупинено")
+                return
+            _log(f"SIP-транк {profile['username']}@{profile['server']}: {state or '?'}")
+
         db.set_campaign_status(campaign_id, db.RUNNING, started=True)
         max_concurrent = max(1, int(campaign["max_concurrent"] or 1))
         amd_ok = AMD_ENABLED and await amd_available(client)
@@ -291,7 +316,7 @@ async def _run_campaign(campaign_id):
                 waiting_logged = False
                 tasks.add(asyncio.create_task(_dial_number(
                     client, row, flow, files, pool,
-                    campaign["campaign_type"], amd_ok)))
+                    campaign["campaign_type"], amd_ok, gateway)))
             if not tasks:
                 if db.next_pending_number(campaign_id) is None:
                     break
@@ -322,7 +347,7 @@ async def _run_campaign(campaign_id):
 
 
 async def _dial_number(client, row, flow, files, pool=None, campaign_type="info",
-                       amd_ok=False):
+                       amd_ok=False, gateway="flysip"):
     number_id, number = row["id"], row["number"]
     call_uuid = str(uuid_mod.uuid4())
     ctx = ivr.CallContext(number_id, flow, files, operators=pool,
@@ -337,7 +362,8 @@ async def _dial_number(client, row, flow, files, pool=None, campaign_type="info"
     hangup_fut = client.expect_event("CHANNEL_HANGUP_COMPLETE", call_uuid)
     _active["calls"][call_uuid] = {"number": number, "state": "dialing"}
     try:
-        cmd = build_campaign_originate_cmd(build_dial_string(number), call_uuid)
+        cmd = build_campaign_originate_cmd(
+            build_dial_string(number, gateway=gateway), call_uuid)
         try:
             reply = await client.bgapi(cmd, timeout=ORIGINATE_TIMEOUT + 30)
         except Exception as exc:  # noqa: BLE001 — ESL drop mid-campaign

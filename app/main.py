@@ -33,7 +33,8 @@ from fastapi import Body, Depends, FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import db, esl, flow as flow_mod, ivr, jobs, operators as operators_mod, tts
+from . import (db, esl, flow as flow_mod, gateways, ivr, jobs,
+               operators as operators_mod, tts)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("caller")
@@ -314,6 +315,7 @@ def update_profile(
 @app.delete("/config/profiles/{profile_id}")
 def delete_profile(profile_id: int):
     db.delete_profile(profile_id)
+    gateways.remove_gateway(profile_id)  # drop the generated trunk XML too
     return {"ok": True}
 
 

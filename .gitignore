@@ -2,8 +2,10 @@
 # Runtime state volumes — the SQLite DB holds SIP passwords in plaintext.
 data/
 audio/
-# Generated operator extensions (contain SIP passwords; written by the app)
+# Generated operator extensions + trunk gateways (contain SIP passwords;
+# written by the app at runtime)
 fs/directory/default/*.xml
+fs/sip_profiles/external/gw_profile_*.xml
 __pycache__/
 *.pyc
 *.wav
