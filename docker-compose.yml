@@ -1,0 +1,46 @@
+# Бойова конфігурація: Linux-хост із публічним IP, host networking для обох
+# сервісів (SIP/RTP мають бачити реальний IP; ESL на 127.0.0.1 спільний).
+# Реальні дзвінки на macOS Docker Desktop НЕ працюють — для локальної розробки
+# є docker-compose.macos.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.macos.yml up
+services:
+  freeswitch:
+    image: safarov/freeswitch:1.10.12
+    platform: linux/amd64
+    network_mode: host
+    environment:
+      # Пароль ESL обов'язковий: event_socket дає повний контроль над движком
+      - ESL_PASSWORD=${ESL_PASSWORD:?set ESL_PASSWORD in .env}
+      # Перший gateway (FlySIP); порожньо = заглушки без реєстрації
+      - SIP_SERVER=${SIP_SERVER:-}
+      - SIP_PORT=${SIP_PORT:-5060}
+      - SIP_USER=${SIP_USER:-}
+      - SIP_PASSWORD=${SIP_PASSWORD:-}
+      # Публічний IP, якщо хост за NAT (порожньо = авто)
+      - EXTERNAL_IP=${EXTERNAL_IP:-}
+    volumes:
+      # Конфіг — статичні XML у репо (Plan.md §3); креди підставляє vars.xml з env
+      - ./fs:/etc/freeswitch:ro
+      # WAV'и синтезує app; FreeSWITCH тільки читає їх тим самим шляхом
+      - ./audio:/app/audio:ro
+    restart: "no"
+
+  app:
+    build: .
+    network_mode: host
+    environment:
+      - WEB_USER=${WEB_USER:-admin}
+      - WEB_PASSWORD=${WEB_PASSWORD:-}
+      - ESL_HOST=127.0.0.1
+      - ESL_PORT=8021
+      - ESL_PASSWORD=${ESL_PASSWORD:?set ESL_PASSWORD in .env}
+      - DIAL_STRING_TEMPLATE=${DIAL_STRING_TEMPLATE:-sofia/gateway/flysip/{number}}
+      - LANG_CODE=${LANG_CODE:-uk}
+    volumes:
+      # Durable state: SQLite (зʼявиться на етапі 2) + аудіо-кеш.
+      # data/ міститиме SIP-паролі плейнтекстом — захищати як .env.
+      - ./data:/app/data
+      - ./audio:/app/audio
+    depends_on:
+      - freeswitch
+    restart: "no"

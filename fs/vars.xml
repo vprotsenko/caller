@@ -1,0 +1,26 @@
+<include>
+  <!-- Телефонія: лише кодеки PCMA/PCMU (Plan.md §3). -->
+  <X-PRE-PROCESS cmd="set" data="global_codec_prefs=PCMA,PCMU"/>
+  <X-PRE-PROCESS cmd="set" data="outbound_codec_prefs=PCMA,PCMU"/>
+  <X-PRE-PROCESS cmd="set" data="external_sip_port=5080"/>
+  <X-PRE-PROCESS cmd="set" data="domain=$${local_ip_v4}"/>
+
+  <!-- Значення з .env: exec-set виконує shell-команду і кладе stdout у
+       змінну препроцесора. УВАГА: сканер X-PRE-PROCESS розуміє ТІЛЬКИ
+       подвійні лапки навколо атрибутів (одинарні мовчки дають порожнє
+       значення), тому всередині shell-команд лапок немає. Паролі приходять
+       з env і не комітяться. -->
+  <X-PRE-PROCESS cmd="exec-set" data="esl_password=printf %s $ESL_PASSWORD"/>
+
+  <!-- Публічний IP хоста за NAT; порожній EXTERNAL_IP = auto (локальний IP).
+       Перевіряється реальним дзвінком одразу на етапі 1 (Plan.md §12). -->
+  <X-PRE-PROCESS cmd="exec-set" data="external_ip=printf %s ${EXTERNAL_IP:-auto}"/>
+
+  <!-- Перший gateway (FlySIP) з .env. Без кредів gateway піднімається з
+       заглушками і не реєструється — досить для §16 рівня 3. -->
+  <X-PRE-PROCESS cmd="exec-set" data="sip_gw_server=printf %s ${SIP_SERVER:-sip.invalid}"/>
+  <X-PRE-PROCESS cmd="exec-set" data="sip_gw_port=printf %s ${SIP_PORT:-5060}"/>
+  <X-PRE-PROCESS cmd="exec-set" data="sip_gw_username=printf %s ${SIP_USER:-anonymous}"/>
+  <X-PRE-PROCESS cmd="exec-set" data="sip_gw_password=printf %s ${SIP_PASSWORD:-none}"/>
+  <X-PRE-PROCESS cmd="exec-set" data="sip_gw_register=if test x$SIP_PASSWORD != x; then printf true; else printf false; fi"/>
+</include>

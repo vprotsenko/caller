@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<!-- Дзвонилка 2.0: обрізаний vanilla-конфіг (Plan.md §3). Жодного chatplan,
+     languages, skinny тощо — тільки те, що потрібно autodialer'у. -->
+<document type="freeswitch/xml">
+  <X-PRE-PROCESS cmd="include" data="vars.xml"/>
+
+  <section name="configuration" description="Various Configuration">
+    <X-PRE-PROCESS cmd="include" data="autoload_configs/*.xml"/>
+  </section>
+
+  <section name="dialplan" description="Regex/XML Dialplan">
+    <X-PRE-PROCESS cmd="include" data="dialplan/*.xml"/>
+  </section>
+
+  <!-- mod_sofia reads operator extensions (stage 3) from here -->
+  <section name="directory" description="User Directory">
+    <X-PRE-PROCESS cmd="include" data="directory/*.xml"/>
+  </section>
+</document>

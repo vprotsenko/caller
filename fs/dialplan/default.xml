@@ -1,0 +1,19 @@
+<!-- Dialplan майже порожній (Plan.md §3): вихідні дзвінки створює контролер
+     через originate, дзвінок керується ESL'ом, не dialplan'ом. -->
+<include>
+  <!-- Контекст для loopback E2E-тестів без транка (§16 рівень 4):
+       originate loopback/9999/default &playback(...) — B-нога відповідає і
+       паркується, A-нога грає WAV; жодного зовнішнього дзвінка. -->
+  <context name="default">
+    <extension name="loopback_test_answer">
+      <condition field="destination_number" expression="^9999$">
+        <action application="answer"/>
+        <action application="park"/>
+      </condition>
+    </extension>
+  </context>
+
+  <!-- Вхідні з транка: dialer тільки дзвонить сам, нічого не маршрутизуємо -->
+  <context name="public">
+  </context>
+</include>

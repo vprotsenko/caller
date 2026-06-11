@@ -1,6 +1,9 @@
 .env
+# Runtime state volumes — the SQLite DB holds SIP passwords in plaintext.
 data/
 audio/
 __pycache__/
 *.pyc
+*.wav
+.pytest_cache/
 -creds.txt

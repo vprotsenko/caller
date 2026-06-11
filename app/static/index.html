@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Дзвонилка 2.0 — PoC (етап 1)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1.5rem; padding: 1rem; }
+  legend { font-weight: 600; padding: 0 .4rem; }
+  label { display: block; margin: .6rem 0 .2rem; font-size: .9rem; }
+  textarea, input, select { width: 100%; box-sizing: border-box; padding: .45rem; border: 1px solid #8886; border-radius: 6px; font: inherit; background: transparent; }
+  textarea { min-height: 5rem; resize: vertical; }
+  button { margin-top: .8rem; padding: .5rem 1.2rem; border: 0; border-radius: 6px; background: #2563eb; color: #fff; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  audio { width: 100%; margin-top: .8rem; display: none; }
+  .out { margin-top: .8rem; font-size: .9rem; white-space: pre-wrap; }
+  .err { color: #dc2626; }
+  .ok { color: #16a34a; }
+  .muted { color: #888; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>Дзвонилка 2.0 — PoC (етап 1)</h1>
+<p class="muted">Синтез повідомлення і один тестовий дзвінок через FreeSWITCH.
+Повний UI кампаній — етап 5.</p>
+
+<fieldset>
+  <legend>Повідомлення</legend>
+  <label for="text">Текст</label>
+  <textarea id="text">Добрий день! Це тестовий дзвінок.</textarea>
+  <label for="voice">Голос</label>
+  <select id="voice">
+    <option>F1</option><option>F2</option><option selected>F3</option>
+    <option>F4</option><option>F5</option>
+    <option>M1</option><option>M2</option><option>M3</option>
+    <option>M4</option><option>M5</option>
+  </select>
+  <button id="previewBtn">Прослухати</button>
+  <audio id="player" controls></audio>
+  <div class="out" id="previewOut"></div>
+</fieldset>
+
+<fieldset>
+  <legend>Тестовий дзвінок</legend>
+  <label for="number">Номер</label>
+  <input id="number" placeholder="+380671234567">
+  <button id="callBtn">Подзвонити</button>
+  <div class="out" id="callOut"></div>
+</fieldset>
+
+<div class="muted" id="statusLine">…</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+async function post(url, fields) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  const r = await fetch(url, { method: "POST", body: fd });
+  let data;
+  try { data = await r.json(); } catch { data = { error: "HTTP " + r.status }; }
+  if (!r.ok && !data.error) data.error = "HTTP " + r.status;
+  return data;
+}
+
+$("previewBtn").onclick = async () => {
+  const btn = $("previewBtn"), out = $("previewOut");
+  btn.disabled = true; out.textContent = "Синтезую…"; out.className = "out";
+  const data = await post("/preview", { text: $("text").value, voice: $("voice").value });
+  btn.disabled = false;
+  if (data.error) { out.textContent = data.error; out.className = "out err"; return; }
+  out.textContent = `Готово, ${data.secs} с`; out.className = "out ok";
+  const p = $("player");
+  p.src = data.url + "?t=" + Date.now();
+  p.style.display = "block";
+  p.play();
+};
+
+$("callBtn").onclick = async () => {
+  const btn = $("callBtn"), out = $("callOut");
+  btn.disabled = true;
+  out.textContent = "Синтез + дзвінок (може тривати до хвилини)…"; out.className = "out";
+  const data = await post("/call", {
+    number: $("number").value, text: $("text").value, voice: $("voice").value,
+  });
+  btn.disabled = false;
+  if (data.error) { out.textContent = data.error; out.className = "out err"; return; }
+  out.className = "out " + (data.status === "answered" ? "ok" : "");
+  out.textContent = `Статус: ${data.status}\nHangup cause: ${data.cause}\nВідповіли: ${data.answered ? "так" : "ні"}`;
+};
+
+(async () => {
+  try {
+    const r = await fetch("/status");
+    const s = await r.json();
+    $("statusLine").textContent = s.esl_connected
+      ? "FreeSWITCH: підключено (" + (s.freeswitch || "") + ")"
+      : "FreeSWITCH: недоступний — " + (s.error || "");
+  } catch { $("statusLine").textContent = "Статус недоступний"; }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+<!-- Extension'и операторів (1001...1009) з'являться тут на етапі 3
+     (контролер генерує по файлу на оператора + reloadxml, Plan.md §15). -->
+<include>
+  <domain name="$${domain}">
+    <params>
+      <param name="dial-string"
+             value="{presence_id=${dialed_user}@${dialed_domain}}${sofia_contact(${dialed_user}@${dialed_domain})}"/>
+    </params>
+    <groups>
+      <group name="default">
+        <users>
+        </users>
+      </group>
+    </groups>
+  </domain>
+</include>
