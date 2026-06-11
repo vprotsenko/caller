@@ -35,10 +35,16 @@ class CallEnded(Exception):
 class CallContext:
     """Per-call link between the worker and the socket server."""
 
-    def __init__(self, number_id, flow, prompt_files):
+    def __init__(self, number_id, flow, prompt_files,
+                 operators=None, ring_timeout=25, bridge_max=3600,
+                 bridge_vars=""):
         self.number_id = number_id
         self.flow = flow
         self.prompt_files = prompt_files  # prompt name -> WAV path
+        self.operators = operators        # OperatorPool for bridge nodes (stage 3)
+        self.ring_timeout = ring_timeout
+        self.bridge_max = bridge_max
+        self.bridge_vars = bridge_vars    # extra per-leg vars on the operator leg
         self.done = asyncio.get_running_loop().create_future()
 
 
@@ -61,6 +67,7 @@ class OutboundSession:
         self._executes = {}      # Application-UUID -> future
         self._reader_task = None
         self._digit_seq = 0      # unique channel-var name per wait_digit call
+        self.bridged = False     # a CHANNEL_BRIDGE happened on this call
 
     async def handshake(self):
         self._writer.write(b"connect\n\n")
@@ -171,6 +178,34 @@ class OutboundSession:
             digit = "" if body.startswith("-ERR") or body == "_undef_" else body
         return digit or None
 
+    async def bridge(self, dial_target, ring_timeout, max_seconds, extra_vars=""):
+        """Bridge the callee to `dial_target` (e.g. user/1001@<domain>).
+
+        Returns True if a real bridge happened (the operator answered) —
+        tracked via CHANNEL_BRIDGE. hangup_after_bridge ends the call when
+        either side hangs up; continue_on_fail keeps the channel alive when
+        the operator does not answer, so the outcome can be recorded.
+        extra_vars are per-leg channel vars on the operator leg (e.g.
+        absolute_codec_string to avoid transcoding in the loopback test).
+        """
+        leg_vars = f"leg_timeout={int(ring_timeout)},hangup_after_bridge=true,continue_on_fail=true"
+        if extra_vars:
+            leg_vars += "," + extra_vars
+        arg = f"{{{leg_vars}}}{dial_target}"
+        try:
+            event = await self.execute("bridge", arg, timeout=max_seconds)
+            logger.info(
+                "bridge to %s done: bridged=%s disposition=%s cause=%s",
+                dial_target, self.bridged,
+                (event or {}).get("variable_originate_disposition"),
+                (event or {}).get("variable_last_bridge_hangup_cause")
+                or (event or {}).get("variable_bridge_hangup_cause"))
+        except CallEnded:
+            # the conversation ended with a hangup — normal for a bridge
+            logger.info("bridge to %s ended with hangup: bridged=%s",
+                        dial_target, self.bridged)
+        return self.bridged
+
     async def hangup(self, cause="NORMAL_CLEARING"):
         if self.ended.is_set():
             return
@@ -213,6 +248,8 @@ class OutboundSession:
             fut = self._executes.get(event.get("Application-UUID", ""))
             if fut and not fut.done():
                 fut.set_result(event)
+        elif name == "CHANNEL_BRIDGE":
+            self.bridged = True
         elif name in ("CHANNEL_HANGUP", "CHANNEL_HANGUP_COMPLETE"):
             self.hangup_cause = event.get("Hangup-Cause", "NORMAL_CLEARING")
             self.ended.set()
@@ -244,14 +281,18 @@ class OutboundSession:
             pass
 
 
-async def run_flow(session, flow, prompt_files, on_digit=None):
+async def run_flow(session, flow, prompt_files, on_digit=None,
+                   operators=None, ring_timeout=25, bridge_max=3600,
+                   bridge_vars=""):
     """Walk the §5 flow graph on a live session.
 
     Returns {"mark": None|"optout", "transferred": bool, "dtmf": str,
-    "bridge_target": str|None}. CallEnded mid-flow is normal (the callee hung
-    up): the partial outcome is returned, the cause is on session.hangup_cause.
+    "bridge_attempted": bool, "bridge_target": str|None}. CallEnded mid-flow
+    is normal (the callee hung up): the partial outcome is returned, the
+    cause is on session.hangup_cause.
     """
-    outcome = {"mark": None, "transferred": False, "dtmf": "", "bridge_target": None}
+    outcome = {"mark": None, "transferred": False, "dtmf": "",
+               "bridge_attempted": False, "bridge_target": None}
     nodes = flow["nodes"]
     current = flow["start"]
     try:
@@ -283,12 +324,24 @@ async def run_flow(session, flow, prompt_files, on_digit=None):
                 current = branch or node["on_timeout"]
 
             elif ntype == "bridge":
+                outcome["bridge_attempted"] = True
                 if node.get("prompt"):
                     await session.play(prompt_files[node["prompt"]])
-                # Stage 3 connects a live operator here; until then the call
-                # ends politely after the prompt.
-                outcome["bridge_target"] = "pending-stage-3"
-                logger.info("bridge node reached — operator bridging is stage 3")
+                ext = await operators.acquire() if operators is not None else None
+                if ext is None:
+                    # nobody free/registered -> polite end; the worker maps
+                    # bridge_attempted without transfer to missed-operator
+                    logger.info("bridge: no free operator")
+                    await session.hangup()
+                    return outcome
+                outcome["bridge_target"] = ext
+                try:
+                    bridged = await session.bridge(
+                        operators.dial_target(ext), ring_timeout, bridge_max,
+                        extra_vars=bridge_vars)
+                finally:
+                    operators.release(ext)
+                outcome["transferred"] = bool(bridged)
                 await session.hangup()
                 return outcome
 
@@ -300,6 +353,9 @@ async def run_flow(session, flow, prompt_files, on_digit=None):
         await session.hangup()
     except CallEnded:
         logger.info("callee hung up mid-flow (cause=%s)", session.hangup_cause)
+        # a hangup that ends the bridged conversation is still a transfer
+        outcome["transferred"] = outcome["transferred"] or bool(
+            getattr(session, "bridged", False))
     return outcome
 
 
@@ -314,7 +370,11 @@ async def handle_connection(reader, writer):
             logger.error("outbound socket for unknown call %s — hanging up", session.uuid)
             await session.hangup()
             return
-        outcome = await run_flow(session, ctx.flow, ctx.prompt_files)
+        outcome = await run_flow(session, ctx.flow, ctx.prompt_files,
+                                 operators=ctx.operators,
+                                 ring_timeout=ctx.ring_timeout,
+                                 bridge_max=ctx.bridge_max,
+                                 bridge_vars=ctx.bridge_vars)
         outcome["hangup_cause"] = session.hangup_cause
         if not ctx.done.done():
             ctx.done.set_result(outcome)

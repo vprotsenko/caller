@@ -1,5 +1,6 @@
-<!-- Extension'и операторів (1001...1009) з'являться тут на етапі 3
-     (контролер генерує по файлу на оператора + reloadxml, Plan.md §15). -->
+<!-- Домен для операторських extension'ів. Файли default/<ext>.xml генерує
+     контролер (POST /config/operators + reloadxml, Plan.md §15); вони містять
+     SIP-паролі операторів і НЕ комітяться (.gitignore). -->
 <include>
   <domain name="$${domain}">
     <params>
@@ -9,6 +10,7 @@
     <groups>
       <group name="default">
         <users>
+          <X-PRE-PROCESS cmd="include" data="default/*.xml"/>
         </users>
       </group>
     </groups>

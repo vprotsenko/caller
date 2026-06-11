@@ -35,12 +35,18 @@ services:
       - ESL_PORT=8021
       - ESL_PASSWORD=${ESL_PASSWORD:?set ESL_PASSWORD in .env}
       - DIAL_STRING_TEMPLATE=${DIAL_STRING_TEMPLATE:-sofia/gateway/flysip/{number}}
+      - ORIGINATE_EXTRA_VARS=${ORIGINATE_EXTRA_VARS:-}
+      - BRIDGE_EXTRA_VARS=${BRIDGE_EXTRA_VARS:-}
       - LANG_CODE=${LANG_CODE:-uk}
+      - FS_CONF_DIR=/app/fs
     volumes:
-      # Durable state: SQLite (зʼявиться на етапі 2) + аудіо-кеш.
-      # data/ міститиме SIP-паролі плейнтекстом — захищати як .env.
+      # Durable state: SQLite + аудіо-кеш.
+      # data/ містить SIP-паролі плейнтекстом — захищати як .env.
       - ./data:/app/data
       - ./audio:/app/audio
+      # Контролер генерує operator-extension'и (directory/default/*.xml)
+      # і на етапі 5 — gateway'ї; FreeSWITCH бачить той самий каталог як ro.
+      - ./fs:/app/fs
     depends_on:
       - freeswitch
     restart: "no"

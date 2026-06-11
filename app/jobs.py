@@ -19,7 +19,7 @@ import re
 import time
 import uuid as uuid_mod
 
-from . import db, esl, ivr, tts
+from . import db, esl, ivr, operators as operators_mod, tts
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +28,46 @@ AUDIO_DIR = os.environ.get("AUDIO_DIR", "/app/audio")
 DIAL_STRING_TEMPLATE = os.environ.get(
     "DIAL_STRING_TEMPLATE", "sofia/gateway/flysip/{number}")
 ORIGINATE_TIMEOUT = int(os.environ.get("ORIGINATE_TIMEOUT", "30"))
+# Extra channel vars prepended to every originate. Empty in production (the
+# trunk negotiates codecs); the loopback E2E env sets e.g.
+# absolute_codec_string=PCMA so the loopback leg and the SIP operator leg share
+# a codec and the bridge needs no transcoding (Plan.md §16).
+ORIGINATE_EXTRA_VARS = os.environ.get("ORIGINATE_EXTRA_VARS", "").strip()
+# Same idea for the operator bridge leg (loopback test pins a shared codec).
+BRIDGE_EXTRA_VARS = os.environ.get("BRIDGE_EXTRA_VARS", "").strip()
 IVR_HOST = os.environ.get("IVR_HOST", "127.0.0.1")
 IVR_PORT = int(os.environ.get("IVR_PORT", "8084"))
 # hard per-call budget after answer: longest message + menus must fit
 ANSWERED_CALL_BUDGET = int(os.environ.get("ANSWERED_CALL_BUDGET", "600"))
+# operator bridging (stage 3)
+OPERATOR_RING_TIMEOUT = int(os.environ.get("OPERATOR_RING_TIMEOUT", "25"))
+BRIDGE_MAX_SECONDS = int(os.environ.get("BRIDGE_MAX_SECONDS", "3600"))
 
 # Digits only (optional leading +): keeps originate-command injection
 # (spaces, braces, pipes) impossible by construction.
 _NUMBER_RE = re.compile(r"^\+?\d{3,15}$")
+
+# Supertonic rejects typographic apostrophes/dashes common in Ukrainian text
+# (U+02BC у «зʼєднати» тощо) — map them to supported ASCII before synthesis.
+_TEXT_REPLACEMENTS = str.maketrans({
+    "ʼ": "'",  # MODIFIER LETTER APOSTROPHE (український апостроф)
+    "’": "'",  # RIGHT SINGLE QUOTATION MARK
+    "‘": "'",
+    "ʹ": "'",
+    "“": '"',
+    "”": '"',
+    "«": '"',
+    "»": '"',
+    "–": "-",
+    "—": "-",
+    "…": "...",
+    " ": " ",  # non-breaking space
+})
+
+
+def normalize_text(text):
+    """Make typographic punctuation synthesizable (Supertonic rejects it)."""
+    return (text or "").translate(_TEXT_REPLACEMENTS)
 
 # Hangup cause -> campaign_number.status (Plan.md §6). Anything else, or an
 # originate refused by the provider, is "failed" — often a billing/route
@@ -75,11 +107,14 @@ def _originate_vars(call_uuid):
     """ignore_early_media: with 183 early media (common on mobile networks)
     the call must NOT count as answered before the real 200 OK, or the message
     plays into the ringing tone (v1 lesson — do not "optimize" away)."""
-    return ",".join([
+    parts = [
         f"origination_uuid={call_uuid}",
         f"originate_timeout={ORIGINATE_TIMEOUT}",
         "ignore_early_media=true",
-    ])
+    ]
+    if ORIGINATE_EXTRA_VARS:
+        parts.append(ORIGINATE_EXTRA_VARS)
+    return ",".join(parts)
 
 
 def build_originate_cmd(dial_string, wav_path, call_uuid):
@@ -103,6 +138,8 @@ def outcome_status(outcome):
         return "optout"
     if outcome.get("transferred"):
         return "transferred"
+    if outcome.get("bridge_attempted"):
+        return "missed-operator"  # wanted an operator, never got bridged
     return "answered"
 
 
@@ -118,10 +155,11 @@ def prerender_prompts(flow):
     campaign must not start half-mute (§5)."""
     files = {}
     for name, prompt in flow["prompts"].items():
-        path = prompt_path(prompt["text"], prompt["voice"])
+        text = normalize_text(prompt["text"])
+        path = prompt_path(text, prompt["voice"])
         if not os.path.isfile(path):
             native = path + ".native.wav"
-            tts.synthesize_telephony(prompt["text"], prompt["voice"], native, path)
+            tts.synthesize_telephony(text, prompt["voice"], native, path)
             try:
                 os.remove(native)
             except OSError:
@@ -138,7 +176,13 @@ _active = {
     "calls": {},   # call_uuid -> {"number": ..., "state": dialing|ivr}
     "log": collections.deque(maxlen=40),
     "stopping": False,
+    "pool": None,  # OperatorPool while an operator campaign runs
 }
+
+
+def busy_extensions():
+    pool = _active.get("pool")
+    return pool.busy_extensions() if pool else set()
 
 
 def _log(msg):
@@ -202,19 +246,37 @@ async def _run_campaign(campaign_id):
 
         db.set_campaign_status(campaign_id, db.RUNNING, started=True)
         max_concurrent = max(1, int(campaign["max_concurrent"] or 1))
+        pool = None
+        if campaign["campaign_type"] == "operator":
+            pool = operators_mod.OperatorPool(client)
+            _active["pool"] = pool
         _log(f"набір почато (одночасно: {max_concurrent})")
 
         tasks = set()
+        waiting_logged = False
         while not _active["stopping"]:
-            while len(tasks) < max_concurrent:
+            allowed = max_concurrent
+            if pool is not None:
+                # §7: no more new originates than free registered operators
+                allowed = min(allowed, len(tasks) + await pool.free_count())
+            while len(tasks) < allowed:
                 row = db.claim_next_pending(campaign_id)
                 if row is None:
                     break
+                waiting_logged = False
                 tasks.add(asyncio.create_task(
-                    _dial_number(client, row, flow, files)))
+                    _dial_number(client, row, flow, files, pool)))
             if not tasks:
-                break
-            done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                if db.next_pending_number(campaign_id) is None:
+                    break
+                # operator campaign with nobody free/registered: wait, don't dial
+                if not waiting_logged:
+                    _log("очікую вільного зареєстрованого оператора")
+                    waiting_logged = True
+                await asyncio.sleep(2)
+                continue
+            done, tasks = await asyncio.wait(
+                tasks, timeout=5, return_when=asyncio.FIRST_COMPLETED)
             for t in done:
                 if t.exception():
                     logger.error("dial task failed", exc_info=t.exception())
@@ -230,12 +292,16 @@ async def _run_campaign(campaign_id):
                                error="внутрішня помилка воркера", finished=True)
     finally:
         _active["calls"] = {}
+        _active["pool"] = None
 
 
-async def _dial_number(client, row, flow, files):
+async def _dial_number(client, row, flow, files, pool=None):
     number_id, number = row["id"], row["number"]
     call_uuid = str(uuid_mod.uuid4())
-    ctx = ivr.CallContext(number_id, flow, files)
+    ctx = ivr.CallContext(number_id, flow, files, operators=pool,
+                          ring_timeout=OPERATOR_RING_TIMEOUT,
+                          bridge_max=BRIDGE_MAX_SECONDS,
+                          bridge_vars=BRIDGE_EXTRA_VARS)
     ivr.REGISTRY[call_uuid] = ctx
     hangup_fut = client.expect_event("CHANNEL_HANGUP_COMPLETE", call_uuid)
     _active["calls"][call_uuid] = {"number": number, "state": "dialing"}
@@ -258,8 +324,9 @@ async def _dial_number(client, row, flow, files):
             return
 
         _active["calls"][call_uuid]["state"] = "ivr"
+        budget = ANSWERED_CALL_BUDGET + (BRIDGE_MAX_SECONDS if pool else 0)
         try:
-            outcome = await asyncio.wait_for(ctx.done, ANSWERED_CALL_BUDGET)
+            outcome = await asyncio.wait_for(ctx.done, budget)
         except asyncio.TimeoutError:
             await client.api(f"uuid_kill {call_uuid}")
             db.set_number_status(number_id, "failed", hangup_cause="APP_TIMEOUT",

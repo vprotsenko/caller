@@ -2,8 +2,13 @@
 # Runtime state volumes — the SQLite DB holds SIP passwords in plaintext.
 data/
 audio/
+# Generated operator extensions (contain SIP passwords; written by the app)
+fs/directory/default/*.xml
 __pycache__/
 *.pyc
 *.wav
 .pytest_cache/
 -creds.txt
+# Test-only dialplan stubs (loopback operator simulation, §16)
+fs/dialplan/public/test_*.xml
+fs/sip_profiles/external/test_*.xml

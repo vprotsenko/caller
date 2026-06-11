@@ -18,6 +18,9 @@ class FakeSession:
         self.hung_up = False
         self.hangup_cause = None
         self.die_after_plays = None  # simulate callee hangup mid-flow
+        self.bridged = False
+        self.bridge_answers = False  # does the "operator" pick up?
+        self.bridge_targets = []
 
     async def play(self, path):
         if self.die_after_plays is not None and len(self.played) >= self.die_after_plays:
@@ -33,8 +36,30 @@ class FakeSession:
             return None
         return digit
 
+    async def bridge(self, dial_target, ring_timeout, max_seconds):
+        self.bridge_targets.append(dial_target)
+        self.bridged = self.bridge_answers
+        return self.bridged
+
     async def hangup(self, cause="NORMAL_CLEARING"):
         self.hung_up = True
+
+
+class FakePool:
+    """Operator pool double: a fixed list of free extensions."""
+
+    def __init__(self, free=()):
+        self.free = list(free)
+        self.released = []
+
+    async def acquire(self):
+        return self.free.pop(0) if self.free else None
+
+    def release(self, ext):
+        self.released.append(ext)
+
+    def dial_target(self, ext):
+        return f"user/{ext}@test.domain"
 
 
 FILES = {"main": "/a/main.wav", "connecting": "/a/conn.wav", "optout_ok": "/a/opt.wav"}
@@ -78,12 +103,44 @@ async def test_press_0_optout():
     assert session.hung_up
 
 
-async def test_press_1_reaches_bridge_stub():
+async def test_press_1_no_pool_is_missed():
     session = FakeSession(digits=["1"])
     outcome = await ivr.run_flow(session, make_flow(), FILES)
     assert "/a/conn.wav" in session.played
-    assert outcome["bridge_target"] is not None
-    assert outcome["transferred"] is False  # real bridging is stage 3
+    assert outcome["bridge_attempted"] is True
+    assert outcome["transferred"] is False
+    assert session.hung_up
+
+
+async def test_press_1_operator_answers_transferred():
+    session = FakeSession(digits=["1"])
+    session.bridge_answers = True
+    pool = FakePool(free=["1001"])
+    outcome = await ivr.run_flow(session, make_flow(), FILES, operators=pool)
+    assert session.bridge_targets == ["user/1001@test.domain"]
+    assert outcome["transferred"] is True
+    assert outcome["bridge_target"] == "1001"
+    assert pool.released == ["1001"]  # operator freed after the bridge
+
+
+async def test_press_1_operator_does_not_answer_missed():
+    session = FakeSession(digits=["1"])
+    session.bridge_answers = False
+    pool = FakePool(free=["1001"])
+    outcome = await ivr.run_flow(session, make_flow(), FILES, operators=pool)
+    assert outcome["bridge_attempted"] is True
+    assert outcome["transferred"] is False
+    assert pool.released == ["1001"]
+
+
+async def test_press_1_nobody_free_missed():
+    session = FakeSession(digits=["1"])
+    pool = FakePool(free=[])
+    outcome = await ivr.run_flow(session, make_flow(), FILES, operators=pool)
+    assert outcome["bridge_attempted"] is True
+    assert outcome["bridge_target"] is None
+    assert outcome["transferred"] is False
+    assert session.hung_up
 
 
 async def test_invalid_digit_then_valid_within_repeats():

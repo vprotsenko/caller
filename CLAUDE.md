@@ -63,6 +63,22 @@
 - **macOS-оверрайд**: `docker compose restart app` — безпечний (netns
   freeswitch живе далі), а от рестарт freeswitch вимагає підняти обидва.
 
+## Ґотчі, виявлені на етапі 3
+
+- **Supertonic не приймає типографську пунктуацію** (U+02BC український
+  апостроф у «зʼєднати», «», — , …) і кидає `unsupported character`.
+  `jobs.normalize_text` мапить їх в ASCII перед синтезом — застосовується і в
+  `/preview`, і у пререндері промптів. Не прибирати.
+- **Вільність оператора — наживо `sofia_contact`**, а не події реєстрації
+  (нотатка в Plan.md §7).
+- **E2E bridge на loopback** (§16): щоб місток не падав з
+  `INCOMPATIBLE_DESTINATION`, обидві ноги треба прибити до спільного кодека —
+  env `ORIGINATE_EXTRA_VARS=absolute_codec_string=PCMA` (loopback-нога) +
+  `BRIDGE_EXTRA_VARS=absolute_codec_string=PCMA` (нога оператора). У проді
+  порожні — транк домовляється сам. Тестовий «оператор» — самозареєстрований
+  gateway (`fs/sip_profiles/external/test_*.xml`) + dialplan-заглушка
+  (`fs/dialplan/public/test_*.xml`, answer→sleep→hangup), обидва gitignored.
+
 ## Команди
 
 ```bash

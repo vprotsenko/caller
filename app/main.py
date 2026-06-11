@@ -33,7 +33,7 @@ from fastapi import Body, Depends, FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import db, esl, flow as flow_mod, ivr, jobs, tts
+from . import db, esl, flow as flow_mod, ivr, jobs, operators as operators_mod, tts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("caller")
@@ -98,7 +98,7 @@ def preview(
     speed: float = Form(1.05),
     steps: int = Form(8),
 ):
-    text = text.strip()
+    text = jobs.normalize_text(text).strip()
     if not text:
         return JSONResponse({"error": "Порожній текст"}, status_code=400)
     if voice not in tts.VOICES:
@@ -180,10 +180,26 @@ async def status():
         st = await client.api("status")
         snap["esl_connected"] = True
         snap["freeswitch"] = st.strip().splitlines()[0] if st.strip() else ""
+        snap["operators"] = await _operator_states(client)
     except Exception as exc:  # noqa: BLE001 — health endpoint must not 500
         snap["esl_connected"] = False
         snap["esl_error"] = exc.__class__.__name__
     return snap
+
+
+async def _operator_states(client):
+    """Operators with live registration + busy flags (Plan.md §15)."""
+    busy = jobs.busy_extensions()
+    out = []
+    for op in db.list_operators():
+        registered = False
+        try:
+            registered = await operators_mod.is_registered(client, op["extension"])
+        except Exception:  # noqa: BLE001 — a dead ESL must not break /status
+            pass
+        out.append({**op, "registered": registered,
+                    "busy": op["extension"] in busy})
+    return out
 
 
 # --- stage-1 PoC: one ad-hoc call -------------------------------------------------
@@ -196,7 +212,7 @@ async def call(
     speed: float = Form(1.05),
     steps: int = Form(8),
 ):
-    text = text.strip()
+    text = jobs.normalize_text(text).strip()
     if not text:
         return JSONResponse({"error": "Порожній текст"}, status_code=400)
     if voice not in tts.VOICES:
@@ -294,6 +310,61 @@ def _validate_profile(name, server, port, username):
     if not str(port).isdigit() or not 0 < int(port) < 65536:
         return f"Некоректний порт {port}"
     return None
+
+
+# --- Operators (§15, stage 3) ------------------------------------------------------
+
+@app.get("/config/operators")
+async def list_operators():
+    try:
+        client = await esl.shared_client()
+        return {"operators": await _operator_states(client)}
+    except Exception:  # noqa: BLE001 — show the list even with the engine down
+        return {"operators": [{**op, "registered": None, "busy": False}
+                              for op in db.list_operators()]}
+
+
+@app.post("/config/operators")
+async def create_operator(payload: dict = Body(...)):
+    name = (payload.get("name") or "").strip()
+    extension = (payload.get("extension") or "").strip()
+    password = payload.get("password") or ""
+    if not name:
+        return JSONResponse({"error": "Вкажіть ім'я оператора"}, status_code=400)
+    if not operators_mod.EXTENSION_RE.match(extension):
+        return JSONResponse({"error": f"Некоректний extension «{extension}» (3–6 цифр)"},
+                            status_code=400)
+    if len(password) < 6:
+        return JSONResponse({"error": "Пароль закороткий (мінімум 6 символів)"},
+                            status_code=400)
+    try:
+        op_id = db.create_operator(name, extension, password)
+    except Exception:
+        return JSONResponse({"error": f"Extension {extension} уже існує"}, status_code=409)
+    operators_mod.write_extension(extension, password)
+    reload_ok = True
+    try:
+        client = await esl.shared_client()
+        reload_ok = "+OK" in await operators_mod.reloadxml(client)
+    except Exception:  # noqa: BLE001 — the entry is durable; reload retried on demand
+        reload_ok = False
+        logger.warning("reloadxml failed; FreeSWITCH will pick the entry up later")
+    return {"ok": True, "id": op_id, "reloadxml": reload_ok}
+
+
+@app.delete("/config/operators/{operator_id}")
+async def delete_operator(operator_id: int):
+    op = db.get_operator(operator_id)
+    if op is None:
+        return JSONResponse({"error": "Оператора не знайдено"}, status_code=404)
+    db.delete_operator(operator_id)
+    operators_mod.remove_extension(op["extension"])
+    try:
+        client = await esl.shared_client()
+        await operators_mod.reloadxml(client)
+    except Exception:  # noqa: BLE001
+        logger.warning("reloadxml failed after operator delete")
+    return {"ok": True}
 
 
 # --- History -----------------------------------------------------------------------

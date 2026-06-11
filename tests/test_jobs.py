@@ -68,9 +68,20 @@ def test_build_campaign_originate_cmd_hands_off_to_socket():
     ({}, "answered"),
     # optout wins: the caller asked out even if an operator was reached
     ({"mark": "optout", "transferred": True}, "optout"),
+    # wanted an operator but never got bridged -> missed-operator (§6)
+    ({"bridge_attempted": True, "transferred": False}, "missed-operator"),
+    ({"bridge_attempted": True, "transferred": True}, "transferred"),
 ])
 def test_outcome_status(outcome, expected):
     assert jobs.outcome_status(outcome) == expected
+
+
+def test_normalize_text_typographic_punctuation():
+    # Supertonic rejects U+02BC (український апостроф) та типографські знаки
+    assert jobs.normalize_text("зʼєднати") == "з'єднати"
+    assert jobs.normalize_text("з’єднати") == "з'єднати"
+    assert jobs.normalize_text("«Привіт» — сказав він…") == '"Привіт" - сказав він...'
+    assert jobs.normalize_text(None) == ""
 
 
 def test_prompt_path_is_cache_key(tmp_path, monkeypatch):
