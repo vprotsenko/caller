@@ -7,8 +7,11 @@
   </gateways>
 
   <settings>
+    <!-- sip-trace=yes: SIP-обмін із транком пишеться в лог (діагностика
+         реальних дзвінків — точна причина 4xx-відмов провайдера). Можна
+         вимкнути на yes→no, коли дзвінки стабільні. -->
     <param name="debug" value="0"/>
-    <param name="sip-trace" value="no"/>
+    <param name="sip-trace" value="yes"/>
     <param name="sip-capture" value="no"/>
     <!-- DTMF тільки RFC2833 (events у RTP) — IVR-меню етапу 2 живиться цим -->
     <param name="rfc2833-pt" value="101"/>

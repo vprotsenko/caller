@@ -1,7 +1,10 @@
 <configuration name="modules.conf" description="Modules">
   <modules>
-    <!-- logging -->
+    <!-- logging: console (stdout) + logfile (/var/log/freeswitch/freeswitch.log)
+         для діагностики реальних дзвінків — base safarov-образ стартує з -nf,
+         тож без mod_logfile історія дзвінків ніде не зберігається. -->
     <load module="mod_console"/>
+    <load module="mod_logfile"/>
     <!-- core API + ESL -->
     <load module="mod_commands"/>
     <load module="mod_event_socket"/>

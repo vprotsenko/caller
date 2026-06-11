@@ -155,8 +155,10 @@
         - { key: EXTERNAL_IP, value: "{{ external_ip | default('') }}" }
       no_log: true
 
+    # --force-recreate so fs/ config changes (new modules, sip-trace, gateways)
+    # are picked up — FreeSWITCH loads modules only at (re)start, not reloadxml.
     - name: Build and (re)start the stack (FreeSWITCH pull + app build)
-      ansible.builtin.command: docker compose up -d --build
+      ansible.builtin.command: docker compose up -d --build --force-recreate
       args:
         chdir: "{{ app_dir }}"
       changed_when: true
