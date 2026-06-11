@@ -38,7 +38,8 @@ services:
       - ESL_HOST=127.0.0.1
       - ESL_PORT=8021
       - ESL_PASSWORD=${ESL_PASSWORD:?set ESL_PASSWORD in .env}
-      - DIAL_STRING_TEMPLATE=${DIAL_STRING_TEMPLATE:-sofia/gateway/flysip/{number}}
+      # {gw} = gateway генерований з обраного SIP-профілю (app/gateways.py).
+      - DIAL_STRING_TEMPLATE=${DIAL_STRING_TEMPLATE:-sofia/gateway/{gw}/{number}}
       - ORIGINATE_EXTRA_VARS=${ORIGINATE_EXTRA_VARS:-}
       - BRIDGE_EXTRA_VARS=${BRIDGE_EXTRA_VARS:-}
       - AMD_ENABLED=${AMD_ENABLED:-1}
