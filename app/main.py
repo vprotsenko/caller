@@ -40,7 +40,8 @@ logger = logging.getLogger("caller")
 
 AUDIO_DIR = jobs.AUDIO_DIR
 os.makedirs(AUDIO_DIR, exist_ok=True)
-INDEX_PATH = os.path.join(os.path.dirname(__file__), "static", "index.html")
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+INDEX_PATH = os.path.join(STATIC_DIR, "index.html")
 
 WEB_USER = os.environ.get("WEB_USER", "admin")
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD") or secrets.token_urlsafe(12)
@@ -83,10 +84,24 @@ app = FastAPI(dependencies=[Depends(require_auth)], lifespan=lifespan)
 
 _call_lock = asyncio.Lock()  # one ad-hoc PoC call at a time
 
+# Static assets are served by an explicit route (NOT app.mount): a mounted
+# sub-app would bypass the global require_auth dependency.
+_STATIC_TYPES = {".js": "application/javascript", ".css": "text/css",
+                 ".html": "text/html"}
+
 
 @app.get("/")
 def index():
     return FileResponse(INDEX_PATH, media_type="text/html")
+
+
+@app.get("/static/{name}")
+def static_file(name: str):
+    path = os.path.join(STATIC_DIR, os.path.basename(name))
+    if not os.path.isfile(path):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    ext = os.path.splitext(path)[1]
+    return FileResponse(path, media_type=_STATIC_TYPES.get(ext, "application/octet-stream"))
 
 
 # --- TTS preview ----------------------------------------------------------------

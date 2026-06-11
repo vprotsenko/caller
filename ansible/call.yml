@@ -1,0 +1,66 @@
+---
+# Запустити тестову кампанію через розгорнутий застосунок (запит біжить на
+# сервері). Веб Basic Auth береться з {{ app_dir }}/.env. SIP-профіль —
+# дефолтний у БД (засіяний із SIP_* при першому старті) або вкажи -e profile_id.
+#
+#   ansible-playbook call.yml \
+#     -e 'message=Добрий день! Це тест.' -e 'numbers=+380671234567' \
+#     [-e voice=F3] [-e campaign_type=operator] [-e 'name=Акція'] \
+#     [-e profile_id=1] [-e max_concurrent=1] \
+#     [-e ivr_operator=true] [-e ivr_repeat=true] [-e ivr_optout=true]
+#
+# Кілька номерів — через кому в numbers. Далі стеж:  ansible-playbook status.yml
+- name: Start a test campaign
+  hosts: caller
+  gather_facts: false
+  vars:
+    app_dir: /opt/caller
+    name: "Тестова кампанія"
+    voice: F3
+    campaign_type: info
+    max_concurrent: 1
+    ivr_operator: false
+    ivr_repeat: false
+    ivr_optout: false
+    timeout_sec: 5
+  tasks:
+    - name: Read web credentials from the deployed .env
+      ansible.builtin.slurp:
+        src: "{{ app_dir }}/.env"
+      register: env_file
+      no_log: true
+
+    - name: Parse web credentials
+      ansible.builtin.set_fact:
+        web_user: "{{ (env_file.content | b64decode) | regex_search('WEB_USER=(.*)', '\\1') | first }}"
+        web_password: "{{ (env_file.content | b64decode) | regex_search('WEB_PASSWORD=(.*)', '\\1') | first }}"
+      no_log: true
+
+    - name: POST /start (JSON contract, Plan.md §15)
+      ansible.builtin.uri:
+        url: http://localhost:8000/start
+        method: POST
+        url_username: "{{ web_user }}"
+        url_password: "{{ web_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ name }}"
+          message: "{{ message }}"
+          voice: "{{ voice }}"
+          campaign_type: "{{ campaign_type }}"
+          max_concurrent: "{{ max_concurrent | int }}"
+          profile_id: "{{ profile_id | default(omit) }}"
+          numbers: "{{ numbers.split(',') | map('trim') | list }}"
+          ivr:
+            operator: { enabled: "{{ ivr_operator | bool }}" }
+            repeat: { enabled: "{{ ivr_repeat | bool }}", max: 2 }
+            optout: { enabled: "{{ ivr_optout | bool }}" }
+            timeout_sec: "{{ timeout_sec | int }}"
+            on_timeout: hangup
+        status_code: [200, 400, 409]
+      register: start
+
+    - name: Result
+      ansible.builtin.debug:
+        msg: "POST /start -> HTTP {{ start.status }} | {{ start.json }}"

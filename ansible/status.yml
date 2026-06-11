@@ -1,0 +1,42 @@
+---
+# Опитати /status розгорнутого застосунку до завершення кампанії.
+#   ansible-playbook status.yml            # один знімок
+#   ansible-playbook status.yml -e wait=1  # чекати до phase: done/stopped
+- name: Show campaign status
+  hosts: caller
+  gather_facts: false
+  vars:
+    app_dir: /opt/caller
+    wait: 0
+  tasks:
+    - name: Read web credentials from the deployed .env
+      ansible.builtin.slurp:
+        src: "{{ app_dir }}/.env"
+      register: env_file
+      no_log: true
+
+    - name: Parse web credentials
+      ansible.builtin.set_fact:
+        web_user: "{{ (env_file.content | b64decode) | regex_search('WEB_USER=(.*)', '\\1') | first }}"
+        web_password: "{{ (env_file.content | b64decode) | regex_search('WEB_PASSWORD=(.*)', '\\1') | first }}"
+      no_log: true
+
+    - name: GET /status (optionally polling until terminal)
+      ansible.builtin.uri:
+        url: http://localhost:8000/status
+        url_username: "{{ web_user }}"
+        url_password: "{{ web_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: s
+      retries: "{{ 120 if (wait | int) else 0 }}"
+      delay: 3
+      until: (wait | int) == 0 or (s.json.phase | default('')) in ['done', 'stopped', 'interrupted', 'idle']
+
+    - name: Status
+      ansible.builtin.debug:
+        msg:
+          - "Кампанія: #{{ s.json.campaign_id | default('—') }} {{ s.json.name | default('') }}"
+          - "Фаза: {{ s.json.phase | default('?') }}"
+          - "Лічильники: {{ s.json.counts | default({}) }}"
+          - "FreeSWITCH ESL: {{ s.json.esl_connected | default('?') }}"

@@ -1,0 +1,169 @@
+---
+# Deploy Дзвонилка 2.0 (FreeSWITCH + контролер) на Ubuntu-хост у Docker.
+# Лише вбудовані модулі (без docker SDK / зовнішніх колекцій).
+#
+#   cd caller/ansible && ansible-playbook deploy.yml
+#   ansible-playbook deploy.yml -e web_password='choose-your-own'
+#
+# Хост — Linux із ПУБЛІЧНИМ IP: обидва контейнери в network_mode: host, тож
+# SIP/RTP працюють напряму (Plan.md §10). .env оновлюється порядково
+# (lineinfile), тож SIP_*/ESL_PASSWORD, додані вручну на сервері, переживають
+# редеплой. Веб-логін/пароль друкуються в кінці.
+- name: Deploy caller v2 (FreeSWITCH + app)
+  hosts: caller
+  gather_facts: true
+  vars:
+    app_dir: /opt/caller
+    web_user: admin
+    # FreeSWITCH-образ: базовий (без mod_amd) за замовчуванням. Для реального
+    # AMD зібрати caller-freeswitch:amd і передати -e freeswitch_image=...
+    freeswitch_image: "safarov/freeswitch:1.10.12"
+    project_files:
+      - requirements.txt
+      - Dockerfile
+      - Dockerfile.freeswitch
+      - docker-compose.yml
+      - pytest.ini
+      - conftest.py
+
+  tasks:
+    - name: Read existing .env if present
+      ansible.builtin.slurp:
+        src: "{{ app_dir }}/.env"
+      register: existing_env
+      ignore_errors: true
+      no_log: true
+
+    - name: "Resolve web password (priority: -e web_password, then existing .env, else generate)"
+      ansible.builtin.set_fact:
+        web_password: >-
+          {{ web_password
+             if (web_password is defined and web_password)
+             else (
+               (existing_env.content | b64decode).split('WEB_PASSWORD=')[1].splitlines()[0]
+               if (existing_env is defined
+                   and not (existing_env.failed | default(false))
+                   and existing_env.content is defined
+                   and 'WEB_PASSWORD=' in (existing_env.content | b64decode))
+               else lookup('password', '/dev/null length=20 chars=ascii_letters,digits')
+             ) }}
+      no_log: true
+
+    - name: "Resolve ESL password (priority: existing .env, else generate)"
+      ansible.builtin.set_fact:
+        esl_password: >-
+          {{ (existing_env.content | b64decode).split('ESL_PASSWORD=')[1].splitlines()[0]
+             if (existing_env is defined
+                 and not (existing_env.failed | default(false))
+                 and existing_env.content is defined
+                 and 'ESL_PASSWORD=' in (existing_env.content | b64decode))
+             else lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}
+      no_log: true
+
+    - name: Check whether docker is installed
+      ansible.builtin.command: docker --version
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Docker (official convenience script) if missing
+      ansible.builtin.shell: curl -fsSL https://get.docker.com | sh
+      when: docker_check.rc != 0
+
+    - name: Ensure Docker is running and enabled
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Ensure app directory exists
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy project files
+      ansible.builtin.copy:
+        src: "../{{ item }}"
+        dest: "{{ app_dir }}/{{ item }}"
+        mode: "0644"
+      loop: "{{ project_files }}"
+
+    - name: Copy the app package
+      ansible.builtin.copy:
+        src: "../app/"
+        dest: "{{ app_dir }}/app/"
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Copy the FreeSWITCH config (fs/)
+      ansible.builtin.copy:
+        src: "../fs/"
+        dest: "{{ app_dir }}/fs/"
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Copy tests (so `docker compose run app pytest` works on the host)
+      ansible.builtin.copy:
+        src: "../tests/"
+        dest: "{{ app_dir }}/tests/"
+        mode: "0644"
+        directory_mode: "0755"
+
+    # .env line-by-line so hand-added values (SIP_*, EXTERNAL_IP) survive redeploys.
+    - name: Write required .env values (Basic Auth + ESL + FreeSWITCH image)
+      ansible.builtin.lineinfile:
+        path: "{{ app_dir }}/.env"
+        create: true
+        mode: "0600"
+        regexp: "^{{ item.key }}="
+        line: "{{ item.key }}={{ item.value }}"
+      loop:
+        - { key: WEB_USER, value: "{{ web_user }}" }
+        - { key: WEB_PASSWORD, value: "{{ web_password }}" }
+        - { key: ESL_PASSWORD, value: "{{ esl_password }}" }
+        - { key: FREESWITCH_IMAGE, value: "{{ freeswitch_image }}" }
+      no_log: true
+
+    - name: Optionally write default SIP trunk creds (passed via -e sip_*)
+      ansible.builtin.lineinfile:
+        path: "{{ app_dir }}/.env"
+        create: true
+        mode: "0600"
+        regexp: "^{{ item.key }}="
+        line: "{{ item.key }}={{ item.value }}"
+      when: item.value | length > 0
+      loop:
+        - { key: SIP_SERVER, value: "{{ sip_server | default('') }}" }
+        - { key: SIP_PORT, value: "{{ sip_port | default('') }}" }
+        - { key: SIP_USER, value: "{{ sip_user | default('') }}" }
+        - { key: SIP_PASSWORD, value: "{{ sip_password | default('') }}" }
+        - { key: EXTERNAL_IP, value: "{{ external_ip | default('') }}" }
+      no_log: true
+
+    - name: Build and (re)start the stack (FreeSWITCH pull + app build)
+      ansible.builtin.command: docker compose up -d --build
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
+
+    - name: Wait until the site answers on :8000 (authenticated)
+      ansible.builtin.uri:
+        url: http://localhost:8000/status
+        url_username: "{{ web_user }}"
+        url_password: "{{ web_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: health
+      retries: 60
+      delay: 5
+      until: health.status is defined and health.status == 200
+      no_log: true
+
+    - name: Done — credentials
+      ansible.builtin.debug:
+        msg:
+          - "Сайт:   http://{{ inventory_hostname }}:8000"
+          - "Логін:  {{ web_user }}"
+          - "Пароль: {{ web_password }}"
+          - "FreeSWITCH ESL підключено: {{ health.json.esl_connected | default('?') }}"
