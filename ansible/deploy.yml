@@ -96,12 +96,26 @@
         mode: "0644"
         directory_mode: "0755"
 
-    - name: Copy the FreeSWITCH config (fs/)
+    # Copy ONLY the tracked base config (explicit list) — NOT the whole fs/
+    # tree: the dev working copy holds gitignored test stubs (test_*.xml) and
+    # generated operator extensions (directory/default/<ext>.xml) that must not
+    # reach the host. Operator XML is written on the server by the app itself
+    # (POST /config/operators). Keep this list in sync with fs/ base files.
+    - name: Copy the FreeSWITCH config (fs/) — tracked base files only
       ansible.builtin.copy:
-        src: "../fs/"
-        dest: "{{ app_dir }}/fs/"
+        src: "../fs/{{ item }}"
+        dest: "{{ app_dir }}/fs/{{ item }}"
         mode: "0644"
         directory_mode: "0755"
+      loop:
+        - freeswitch.xml
+        - vars.xml
+        - autoload_configs/
+        - sip_profiles/external.xml
+        - sip_profiles/internal.xml
+        - sip_profiles/external/flysip.xml
+        - dialplan/default.xml
+        - directory/default.xml
 
     - name: Copy tests (so `docker compose run app pytest` works on the host)
       ansible.builtin.copy:
