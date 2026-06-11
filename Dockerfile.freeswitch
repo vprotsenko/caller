@@ -1,0 +1,53 @@
+# OPTIONAL FreeSWITCH image + mod_amd (answering-machine detection, Plan.md §4).
+#
+# The base safarov/freeswitch image ships mod_avmd (voicemail-beep detection)
+# but NOT mod_amd (HUMAN/MACHINE classification — a third-party module absent
+# from the SignalWire packages too). Compiling it from source pulls the whole
+# FreeSWITCH ./configure dependency chain (spandsp3 → sofia-sip → libks …),
+# which is FRAGILE on stock Debian without SignalWire's apt repo. This file is
+# a best-effort recipe; it may need dependency-version pinning on your box.
+#
+# YOU DO NOT NEED THIS to run the app: without mod_amd the controller treats
+# every answer as HUMAN and never drops a call (graceful degradation). Build it
+# only for real AMD, then point compose at it:
+#   docker build -f Dockerfile.freeswitch -t caller-freeswitch:amd .
+#   echo 'FREESWITCH_IMAGE=caller-freeswitch:amd' >> .env
+# Real AMD accuracy is verified by a human against real voicemail (§16 level 5);
+# the branch logic itself is verified by simulating amd_test_result (§16 lvl 4).
+
+FROM debian:bookworm AS amd-builder
+ARG FS_VERSION=v1.10.12
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git build-essential cmake automake autoconf libtool libtool-bin pkg-config \
+        libssl-dev zlib1g-dev libsqlite3-dev libcurl4-openssl-dev \
+        libpcre2-dev libspeexdsp-dev libldns-dev libedit-dev libsndfile1-dev \
+        libpq-dev libtiff-dev uuid-dev ca-certificates yasm \
+    && rm -rf /var/lib/apt/lists/*
+
+# FreeSWITCH ./configure (which generates the headers mod_amd compiles against)
+# probes a chain of SignalWire forks not packaged in Debian. Build them first:
+WORKDIR /usr/src
+# NB: full clones (not --depth 1) — libks/sofia derive their version from
+# `git describe`, which fails on a shallow clone with no tags (CMake string()
+# error). spandsp is built from the freeswitch fork (the stock one is too old).
+RUN git clone https://github.com/signalwire/libks.git \
+    && cmake -S libks -B libks/build -DCMAKE_INSTALL_PREFIX=/usr -DWITH_LIBBACKTRACE=0 \
+    && make -C libks/build -j"$(nproc)" && make -C libks/build install && ldconfig
+RUN git clone https://github.com/freeswitch/sofia-sip.git \
+    && cd sofia-sip && ./bootstrap.sh && ./configure --prefix=/usr \
+    && make -j"$(nproc)" && make install && ldconfig
+RUN git clone https://github.com/freeswitch/spandsp.git \
+    && cd spandsp && ./bootstrap.sh && ./configure --prefix=/usr \
+    && make -j"$(nproc)" && make install && ldconfig
+
+RUN git clone --depth 1 --branch ${FS_VERSION} \
+        https://github.com/signalwire/freeswitch.git
+WORKDIR /usr/src/freeswitch
+# We don't `make` the whole tree — configure only to generate switch_*.h, then
+# build the single module.
+RUN ./bootstrap.sh -j && ./configure --disable-dependency-tracking
+RUN make -C src/mod/applications/mod_amd
+RUN cp src/mod/applications/mod_amd/.libs/mod_amd.so /tmp/mod_amd.so
+
+FROM safarov/freeswitch:1.10.12
+COPY --from=amd-builder /tmp/mod_amd.so /usr/lib/freeswitch/mod/mod_amd.so

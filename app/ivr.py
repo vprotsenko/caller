@@ -15,13 +15,15 @@ import asyncio
 import logging
 import uuid as uuid_mod
 
-from . import esl
+from . import amd as amd_mod, esl
 
 logger = logging.getLogger(__name__)
 
 MAX_STEPS = 30          # node transitions per call: graph cycles are legal (§5),
                         # infinite loops are not
 EXECUTE_TIMEOUT = 180   # any single app (playback of a long message) must fit
+AMD_TIMEOUT = 15        # seconds to let mod_amd reach a verdict
+BEEP_TIMEOUT = 20       # seconds to wait for the voicemail beep (mod_avmd)
 
 
 class CallEnded(Exception):
@@ -37,7 +39,8 @@ class CallContext:
 
     def __init__(self, number_id, flow, prompt_files,
                  operators=None, ring_timeout=25, bridge_max=3600,
-                 bridge_vars=""):
+                 bridge_vars="", campaign_type="info", amd_enabled=False,
+                 amd_available=False, main_prompt="main"):
         self.number_id = number_id
         self.flow = flow
         self.prompt_files = prompt_files  # prompt name -> WAV path
@@ -45,6 +48,10 @@ class CallContext:
         self.ring_timeout = ring_timeout
         self.bridge_max = bridge_max
         self.bridge_vars = bridge_vars    # extra per-leg vars on the operator leg
+        self.campaign_type = campaign_type
+        self.amd_enabled = amd_enabled    # run AMD before the flow (stage 4)
+        self.amd_available = amd_available  # mod_amd actually loaded in FS
+        self.main_prompt = main_prompt    # prompt to drop on a voicemail
         self.done = asyncio.get_running_loop().create_future()
 
 
@@ -68,6 +75,7 @@ class OutboundSession:
         self._reader_task = None
         self._digit_seq = 0      # unique channel-var name per wait_digit call
         self.bridged = False     # a CHANNEL_BRIDGE happened on this call
+        self._beep = None        # future resolved when mod_avmd reports a beep
 
     async def handshake(self):
         self._writer.write(b"connect\n\n")
@@ -86,6 +94,8 @@ class OutboundSession:
         # deliver this channel's events here; keep the socket up through hangup
         await self._command("linger 5")
         await self._command("myevents plain")
+        # mod_avmd's beep is a CUSTOM event — subscribe explicitly (stage 4)
+        await self._command("event plain CUSTOM avmd::beep")
 
     async def _command(self, cmd, timeout=15):
         fut = asyncio.get_running_loop().create_future()
@@ -149,6 +159,58 @@ class OutboundSession:
 
     async def play(self, wav_path):
         await self.execute("playback", wav_path)
+
+    async def detect_amd(self, amd_available=False, timeout=AMD_TIMEOUT):
+        """Classify the answered call with mod_amd; return HUMAN/MACHINE/NOTSURE.
+
+        Channel variables are read from the connect-handshake data
+        (`variable_<name>`) and from app-completion events, NOT via `api` —
+        the outbound socket rejects api commands ("-ERR command not found").
+
+        A test override channel var (amd_test_result), set via originate vars,
+        short-circuits the real module so loopback E2E can simulate a verdict
+        (§16 level 4) — the same idea as uuid_recv_dtmf for digits.
+
+        `amd_available` (mod_amd loaded — probed once by the worker over the
+        inbound connection) gates the real app: a missing application must not
+        be executed, it would tear the channel down. Absent mod_amd -> HUMAN
+        (we never drop a call we couldn't classify).
+        """
+        override = self.channel.get("variable_amd_test_result", "").strip()
+        if override:
+            return amd_mod.normalize_verdict(override)
+        if not amd_available:
+            logger.info("mod_amd not loaded — treating answer as HUMAN")
+            return amd_mod.HUMAN
+        try:
+            # mod_amd's `amd` app sets amd_result and fires when it decides
+            event = await self.execute("amd", "", timeout=timeout)
+        except esl.ESLError:
+            return amd_mod.HUMAN
+        return amd_mod.normalize_verdict((event or {}).get("variable_amd_result"))
+
+    async def wait_beep(self, timeout=BEEP_TIMEOUT):
+        """Best-effort wait for a voicemail beep via mod_avmd before dropping
+        the message. Returns True if a beep was detected, False on timeout —
+        either way the caller proceeds to play the message."""
+        try:
+            await self.execute("avmd_start", "", timeout=10)
+        except esl.ESLError:
+            logger.info("mod_avmd not available — dropping message without beep wait")
+            return False
+        beep = self._beep = asyncio.get_running_loop().create_future()
+        try:
+            await asyncio.wait_for(beep, timeout)
+            detected = True
+        except asyncio.TimeoutError:
+            detected = False
+        finally:
+            self._beep = None
+            try:
+                await self.execute("avmd_stop", "", timeout=5)
+            except (esl.ESLError, CallEnded):
+                pass
+        return detected
 
     async def wait_digit(self, timeout):
         """One DTMF digit, or None on timeout. Raises CallEnded if the call died.
@@ -250,6 +312,9 @@ class OutboundSession:
                 fut.set_result(event)
         elif name == "CHANNEL_BRIDGE":
             self.bridged = True
+        elif name == "CUSTOM" and event.get("Event-Subclass") == "avmd::beep":
+            if self._beep and not self._beep.done():
+                self._beep.set_result(True)
         elif name in ("CHANNEL_HANGUP", "CHANNEL_HANGUP_COMPLETE"):
             self.hangup_cause = event.get("Hangup-Cause", "NORMAL_CLEARING")
             self.ended.set()
@@ -359,6 +424,49 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
     return outcome
 
 
+async def run_call(session, ctx):
+    """Full answered-call lifecycle (§6): AMD → branch → flow.
+
+    Returns the flow outcome dict augmented with "amd_result". On a MACHINE
+    verdict the flow is skipped: info campaigns drop the message after the
+    beep (voicemail-left), operator campaigns hang up (machine-hangup).
+    """
+    verdict = None
+    if ctx.amd_enabled:
+        try:
+            verdict = await session.detect_amd(amd_available=ctx.amd_available)
+        except CallEnded:
+            # callee hung up during analysis — nothing reached, record no verdict
+            return _flow_outcome(amd_result=None)
+        action = amd_mod.decide(verdict, ctx.campaign_type)
+        if action == amd_mod.MACHINE_HANGUP:
+            await session.hangup()
+            return _flow_outcome(amd_result=verdict, amd_action=action)
+        if action == amd_mod.VOICEMAIL:
+            try:
+                await session.wait_beep()
+                await session.play(ctx.prompt_files[ctx.main_prompt])
+            except CallEnded:
+                pass
+            await session.hangup()
+            return _flow_outcome(amd_result=verdict, amd_action=action)
+        # CONTINUE (HUMAN / NOTSURE) falls through to the normal flow
+
+    outcome = await run_flow(session, ctx.flow, ctx.prompt_files,
+                             operators=ctx.operators,
+                             ring_timeout=ctx.ring_timeout,
+                             bridge_max=ctx.bridge_max,
+                             bridge_vars=ctx.bridge_vars)
+    outcome["amd_result"] = verdict
+    return outcome
+
+
+def _flow_outcome(amd_result=None, amd_action=None):
+    return {"mark": None, "transferred": False, "dtmf": "",
+            "bridge_attempted": False, "bridge_target": None,
+            "amd_result": amd_result, "amd_action": amd_action}
+
+
 async def handle_connection(reader, writer):
     """One answered call: handshake, look up its CallContext, run the flow."""
     session = OutboundSession(reader, writer)
@@ -370,11 +478,7 @@ async def handle_connection(reader, writer):
             logger.error("outbound socket for unknown call %s — hanging up", session.uuid)
             await session.hangup()
             return
-        outcome = await run_flow(session, ctx.flow, ctx.prompt_files,
-                                 operators=ctx.operators,
-                                 ring_timeout=ctx.ring_timeout,
-                                 bridge_max=ctx.bridge_max,
-                                 bridge_vars=ctx.bridge_vars)
+        outcome = await run_call(session, ctx)
         outcome["hangup_cause"] = session.hangup_cause
         if not ctx.done.done():
             ctx.done.set_result(outcome)

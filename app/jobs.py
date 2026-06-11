@@ -19,7 +19,7 @@ import re
 import time
 import uuid as uuid_mod
 
-from . import db, esl, ivr, operators as operators_mod, tts
+from . import amd as amd_mod, db, esl, ivr, operators as operators_mod, tts
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,8 @@ ANSWERED_CALL_BUDGET = int(os.environ.get("ANSWERED_CALL_BUDGET", "600"))
 # operator bridging (stage 3)
 OPERATOR_RING_TIMEOUT = int(os.environ.get("OPERATOR_RING_TIMEOUT", "25"))
 BRIDGE_MAX_SECONDS = int(os.environ.get("BRIDGE_MAX_SECONDS", "3600"))
+# AMD (stage 4): on by default; set AMD_ENABLED=0 to skip classification
+AMD_ENABLED = os.environ.get("AMD_ENABLED", "1") not in ("0", "false", "")
 
 # Digits only (optional leading +): keeps originate-command injection
 # (spaces, braces, pipes) impossible by construction.
@@ -134,6 +136,9 @@ def build_campaign_originate_cmd(dial_string, call_uuid,
 
 def outcome_status(outcome):
     """Final status of an ANSWERED call from the IVR outcome (Plan.md §6)."""
+    action = outcome.get("amd_action")
+    if action in amd_mod.STATUS:        # voicemail-left / machine-hangup
+        return amd_mod.STATUS[action]
     if outcome.get("mark") == "optout":
         return "optout"
     if outcome.get("transferred"):
@@ -191,6 +196,25 @@ def _log(msg):
     logger.info("campaign: %s", msg)
 
 
+_amd_available_cache = None
+
+
+async def amd_available(client):
+    """Whether mod_amd is loaded in FreeSWITCH (probed once over inbound ESL).
+
+    Read from here (not the outbound socket, which rejects api commands)."""
+    global _amd_available_cache
+    if _amd_available_cache is None:
+        try:
+            body = (await client.api("module_exists mod_amd")).strip().lower()
+            _amd_available_cache = body == "true"
+        except Exception:  # noqa: BLE001
+            _amd_available_cache = False
+        if not _amd_available_cache:
+            logger.info("mod_amd not loaded — AMD verdicts default to HUMAN")
+    return _amd_available_cache
+
+
 def campaign_running():
     task = _active["task"]
     return task is not None and not task.done()
@@ -246,6 +270,7 @@ async def _run_campaign(campaign_id):
 
         db.set_campaign_status(campaign_id, db.RUNNING, started=True)
         max_concurrent = max(1, int(campaign["max_concurrent"] or 1))
+        amd_ok = AMD_ENABLED and await amd_available(client)
         pool = None
         if campaign["campaign_type"] == "operator":
             pool = operators_mod.OperatorPool(client)
@@ -264,8 +289,9 @@ async def _run_campaign(campaign_id):
                 if row is None:
                     break
                 waiting_logged = False
-                tasks.add(asyncio.create_task(
-                    _dial_number(client, row, flow, files, pool)))
+                tasks.add(asyncio.create_task(_dial_number(
+                    client, row, flow, files, pool,
+                    campaign["campaign_type"], amd_ok)))
             if not tasks:
                 if db.next_pending_number(campaign_id) is None:
                     break
@@ -295,13 +321,18 @@ async def _run_campaign(campaign_id):
         _active["pool"] = None
 
 
-async def _dial_number(client, row, flow, files, pool=None):
+async def _dial_number(client, row, flow, files, pool=None, campaign_type="info",
+                       amd_ok=False):
     number_id, number = row["id"], row["number"]
     call_uuid = str(uuid_mod.uuid4())
     ctx = ivr.CallContext(number_id, flow, files, operators=pool,
                           ring_timeout=OPERATOR_RING_TIMEOUT,
                           bridge_max=BRIDGE_MAX_SECONDS,
-                          bridge_vars=BRIDGE_EXTRA_VARS)
+                          bridge_vars=BRIDGE_EXTRA_VARS,
+                          campaign_type=campaign_type,
+                          amd_enabled=AMD_ENABLED,
+                          amd_available=amd_ok,
+                          main_prompt=flow.get("start_prompt", "main"))
     ivr.REGISTRY[call_uuid] = ctx
     hangup_fut = client.expect_event("CHANNEL_HANGUP_COMPLETE", call_uuid)
     _active["calls"][call_uuid] = {"number": number, "state": "dialing"}
@@ -343,9 +374,15 @@ async def _dial_number(client, row, flow, files, pool=None):
         db.append_dtmf(number_id, outcome.get("dtmf", ""))
         status = outcome_status(outcome)
         cause = outcome.get("hangup_cause") or "NORMAL_CLEARING"
-        db.set_number_status(number_id, status, hangup_cause=cause, bump_attempt=True)
-        dtmf_note = f", dtmf={outcome['dtmf']}" if outcome.get("dtmf") else ""
-        _log(f"{number} {status} ({cause}{dtmf_note})")
+        db.set_number_status(number_id, status, hangup_cause=cause,
+                             amd_result=outcome.get("amd_result"), bump_attempt=True)
+        notes = []
+        if outcome.get("dtmf"):
+            notes.append(f"dtmf={outcome['dtmf']}")
+        if outcome.get("amd_result"):
+            notes.append(f"AMD={outcome['amd_result']}")
+        note = (", " + ", ".join(notes)) if notes else ""
+        _log(f"{number} {status} ({cause}{note})")
     finally:
         ivr.REGISTRY.pop(call_uuid, None)
         client.cancel_waiter("CHANNEL_HANGUP_COMPLETE", call_uuid)

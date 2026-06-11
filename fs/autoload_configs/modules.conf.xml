@@ -14,8 +14,12 @@
     <!-- аудіо: WAV-файли + тон/тиша -->
     <load module="mod_sndfile"/>
     <load module="mod_tone_stream"/>
-    <!-- детекція біпа автовідповідача (етап 4; mod_amd — відкрите питання,
-         його нема ні в пакетах, ні в цьому образі) -->
+    <!-- AMD (етап 4): mod_avmd — детекція біпа голосової пошти; mod_amd —
+         класифікація HUMAN/MACHINE. mod_amd є лише в образі
+         caller-freeswitch:amd (Dockerfile.freeswitch); у базовому safarov-образі
+         його нема — завантаження дасть НЕфатальне попередження, а контролер
+         трактує відповідь як HUMAN (не скидає дзвінок). -->
     <load module="mod_avmd"/>
+    <load module="mod_amd"/>
   </modules>
 </configuration>

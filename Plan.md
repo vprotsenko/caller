@@ -39,9 +39,12 @@ Autodialer комерційного рівня: обдзвін списку но
    Базовий образ — **рішення етапу 1: `safarov/freeswitch:1.10.12`**
    (Docker Hub, без SignalWire-токена; лише amd64 — на Apple Silicon працює
    під Rosetta, чого досить для локальних тестів). У ньому є всі модулі
-   етапів 1–3 і `mod_avmd`, але **немає `mod_amd`** (його немає і в пакетах
-   SignalWire — це third-party модуль): на етапі 4 зібрати `mod_amd` окремим
-   build-стейджем або обмежитись `mod_avmd`-евристикою — вирішити на етапі 4.
+   етапів 1–3 і `mod_avmd`, але **немає `mod_amd`**. **Рішення етапу 4:**
+   `mod_amd` компілюється з сирців FreeSWITCH 1.10.12 в окремому build-стейджі
+   (`Dockerfile.freeswitch`: спершу збирається spandsp3-форк, потім FS
+   `./configure` генерує заголовки, далі `make` лише `mod_amd`, а `.so`
+   копіюється в рантайм-образ). Контролер толерує відсутність `mod_amd`
+   (трактує відповідь як HUMAN, дзвінок не скидає), тож деградація безпечна.
 2. **app** — FastAPI-контролер + статичний UI + TTS. Python **3.11**
    (переїжджає `tts.py` з його `audioop`-ресемплером; апгрейд Python — окрема
    задача із заміною ресемплера, не зараз).
@@ -162,11 +165,15 @@ UI — **параметризована форма** (рівень 1, рішен
    `USER_BUSY→busy`, `NO_ANSWER|ORIGINATOR_CANCEL|NO_USER_RESPONSE→no-answer`,
    `CALL_REJECTED|інше→failed` (сирий код — у `hangup_cause`).
 3. Відповідь → FreeSWITCH конектиться до outbound-socket → **AMD**
-   (`mod_amd`, дефолтні пороги, тюнінг на реальних дзвінках):
+   (`mod_amd`, дефолтні пороги в `fs/autoload_configs/amd.conf.xml`, тюнінг на
+   реальних дзвінках; вердикт читається зі змінної каналу `amd_result`):
    - `MACHINE`: інфо-кампанія → чекати біп (`mod_avmd`), програти
      повідомлення → `voicemail-left`; операторська кампанія → hangup →
      `machine-hangup`;
    - `HUMAN` / `NOTSURE` → далі (сумнівних не скидаємо).
+   У loopback-тестах (§16) вердикт симулюється змінною каналу
+   `amd_test_result` (`uuid_setvar <a-leg> amd_test_result MACHINE`), як DTMF
+   через `uuid_recv_dtmf`; реальна точність AMD — рівень 5.
 4. Інтерпретація `ivr_flow`: `play` → `playback`; `menu` →
    `play_and_get_digits`; натиснута цифра пишеться у `dtmf`.
 5. Вузол `bridge`: фраза → `bridge user/<extension>` на вільного оператора

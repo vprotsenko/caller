@@ -5,7 +5,11 @@
 #   docker compose -f docker-compose.yml -f docker-compose.macos.yml up
 services:
   freeswitch:
-    image: safarov/freeswitch:1.10.12
+    # Дефолт — готовий образ (працює одразу). Для реального AMD зібрати образ
+    # із mod_amd (див. Dockerfile.freeswitch) і виставити в .env:
+    #   FREESWITCH_IMAGE=caller-freeswitch:amd
+    # Без mod_amd застосунок деградує штатно (відповідь = HUMAN, не скидає).
+    image: ${FREESWITCH_IMAGE:-safarov/freeswitch:1.10.12}
     platform: linux/amd64
     network_mode: host
     environment:
@@ -37,6 +41,7 @@ services:
       - DIAL_STRING_TEMPLATE=${DIAL_STRING_TEMPLATE:-sofia/gateway/flysip/{number}}
       - ORIGINATE_EXTRA_VARS=${ORIGINATE_EXTRA_VARS:-}
       - BRIDGE_EXTRA_VARS=${BRIDGE_EXTRA_VARS:-}
+      - AMD_ENABLED=${AMD_ENABLED:-1}
       - LANG_CODE=${LANG_CODE:-uk}
       - FS_CONF_DIR=/app/fs
     volumes:

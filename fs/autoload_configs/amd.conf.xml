@@ -1,0 +1,16 @@
+<configuration name="amd.conf" description="Answering Machine Detection">
+  <!-- mod_amd дефолти; пороги тюнингуються на реальних автовідповідачах
+       (Plan.md §11, етап 4) — підібрані значення задокументувати тут.
+       initial_silence/greeting/after_greeting_silence — у мілісекундах. -->
+  <settings>
+    <param name="initial_silence" value="2500"/>
+    <param name="greeting" value="1500"/>
+    <param name="after_greeting_silence" value="800"/>
+    <param name="total_analysis_time" value="5000"/>
+    <param name="min_word_length" value="100"/>
+    <param name="between_words_silence" value="50"/>
+    <param name="maximum_number_of_words" value="3"/>
+    <param name="maximum_word_length" value="5000"/>
+    <param name="silence_threshold" value="256"/>
+  </settings>
+</configuration>

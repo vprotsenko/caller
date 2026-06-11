@@ -36,13 +36,23 @@ class FakeSession:
             return None
         return digit
 
-    async def bridge(self, dial_target, ring_timeout, max_seconds):
+    async def bridge(self, dial_target, ring_timeout, max_seconds, extra_vars=""):
         self.bridge_targets.append(dial_target)
         self.bridged = self.bridge_answers
         return self.bridged
 
     async def hangup(self, cause="NORMAL_CLEARING"):
         self.hung_up = True
+
+    # --- AMD (stage 4) ---
+    amd_verdict = "HUMAN"
+    beep_detected = False
+
+    async def detect_amd(self, amd_available=False, timeout=None):
+        return self.amd_verdict
+
+    async def wait_beep(self, timeout=None):
+        return self.beep_detected
 
 
 class FakePool:
@@ -181,3 +191,82 @@ async def test_on_digit_callback_fires():
     session = FakeSession(digits=["0"])
     await ivr.run_flow(session, make_flow(), FILES, on_digit=seen.append)
     assert seen == ["0"]
+
+
+# --- AMD step in run_call (§6, stage 4) -------------------------------------------
+
+def make_ctx(session_flow=None, campaign_type="info", amd_enabled=True):
+    ctx = ivr.CallContext(1, session_flow or make_flow(), FILES,
+                          campaign_type=campaign_type, amd_enabled=amd_enabled)
+    return ctx
+
+
+async def test_amd_disabled_runs_flow_directly():
+    session = FakeSession(digits=[])
+    ctx = make_ctx(amd_enabled=False)
+    outcome = await ivr.run_call(session, ctx)
+    assert session.played[0] == "/a/main.wav"  # flow ran
+    assert outcome["amd_result"] is None
+
+
+async def test_amd_human_continues_to_flow():
+    session = FakeSession(digits=["0"])
+    session.amd_verdict = "HUMAN"
+    outcome = await ivr.run_call(session, make_ctx(campaign_type="info"))
+    assert outcome["amd_result"] == "HUMAN"
+    assert outcome["mark"] == "optout"           # the flow ran, 0 pressed
+    assert "/a/main.wav" in session.played
+
+
+async def test_amd_machine_info_drops_voicemail():
+    session = FakeSession()
+    session.amd_verdict = "MACHINE"
+    session.beep_detected = True
+    outcome = await ivr.run_call(session, make_ctx(campaign_type="info"))
+    assert outcome["amd_result"] == "MACHINE"
+    assert outcome["amd_action"] == ivr.amd_mod.VOICEMAIL
+    assert session.played == ["/a/main.wav"]      # message dropped once
+    assert session.hung_up
+    assert outcome["dtmf"] == ""                  # no menu on a machine
+
+
+async def test_amd_machine_operator_hangs_up():
+    session = FakeSession()
+    session.amd_verdict = "MACHINE"
+    outcome = await ivr.run_call(session, make_ctx(campaign_type="operator"))
+    assert outcome["amd_action"] == ivr.amd_mod.MACHINE_HANGUP
+    assert session.played == []                   # nothing played, just hangup
+    assert session.hung_up
+
+
+async def test_amd_notsure_continues():
+    session = FakeSession(digits=[])
+    session.amd_verdict = "NOTSURE"
+    outcome = await ivr.run_call(session, make_ctx(campaign_type="operator"))
+    assert outcome["amd_result"] == "NOTSURE"
+    assert "/a/main.wav" in session.played        # doubtful -> human path
+
+
+# --- OutboundSession.detect_amd reads vars from connect data (no api) ----------
+
+def bare_session(channel_vars):
+    sess = ivr.OutboundSession.__new__(ivr.OutboundSession)
+    sess.channel = channel_vars
+    sess.uuid = "u1"
+    return sess
+
+
+async def test_detect_amd_uses_connect_override():
+    # amd_test_result set via originate vars arrives as variable_* in connect data
+    sess = bare_session({"variable_amd_test_result": "MACHINE"})
+    assert await sess.detect_amd(amd_available=False) == "MACHINE"
+
+
+async def test_detect_amd_without_module_is_human():
+    sess = bare_session({})           # no override, mod_amd absent
+    assert await sess.detect_amd(amd_available=False) == "HUMAN"
+
+
+async def test_detect_amd_override_beats_missing_module():
+    sess = bare_session({"variable_amd_test_result": "notsure"})
+    assert await sess.detect_amd(amd_available=False) == "NOTSURE"

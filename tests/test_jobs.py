@@ -71,6 +71,10 @@ def test_build_campaign_originate_cmd_hands_off_to_socket():
     # wanted an operator but never got bridged -> missed-operator (§6)
     ({"bridge_attempted": True, "transferred": False}, "missed-operator"),
     ({"bridge_attempted": True, "transferred": True}, "transferred"),
+    # AMD terminal actions win over everything (§6)
+    ({"amd_action": "voicemail"}, "voicemail-left"),
+    ({"amd_action": "machine_hangup"}, "machine-hangup"),
+    ({"amd_action": "voicemail", "mark": "optout"}, "voicemail-left"),
 ])
 def test_outcome_status(outcome, expected):
     assert jobs.outcome_status(outcome) == expected
