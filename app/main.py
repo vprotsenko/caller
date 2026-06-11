@@ -1,32 +1,39 @@
-"""FastAPI entry point — stage 1 (PoC, Plan.md §11).
+"""FastAPI entry point — stages 1–2 (Plan.md §8, §15).
 
 Routes (all behind HTTP Basic Auth, same scheme as v1):
-  GET  /              -> static/index.html (PoC page: preview + test call)
+  GET  /              -> static/index.html
   POST /preview       -> synthesize the message, return an audio URL
-  POST /call          -> originate ONE number, play the message, report outcome
-  GET  /status        -> ESL/FreeSWITCH health (grows into the campaign
-                         snapshot at stage 2)
+  POST /call          -> stage-1 PoC: one ad-hoc call playing the message
+  POST /start         -> start a campaign (JSON body, §15); 409 if one runs
+  GET  /status        -> active-or-latest campaign snapshot (§15)
   GET  /audio/{name}  -> serve a synthesized WAV
+
+SIP profiles:
+  GET /config, POST /config/profiles, POST /config/profiles/{id},
+  DELETE /config/profiles/{id}      (passwords: write-only, only password_set
+                                     ever goes back — Plan.md §4)
+History:
+  GET /campaigns, GET /campaigns/{id},
+  POST /campaigns/{id}/retry-failed (never touches optout),
+  POST /campaigns/{id}/resume       (interrupted -> running)
 
 WEB_PASSWORD comes from the environment; if unset, a random one is generated
 and logged so the app is never left open. NOTE: without TLS in front, Basic
 Auth credentials travel in cleartext (POC trade-off, Plan.md §12).
-
-The ESL password is read from the environment, used on the socket and never
-logged or returned to the client.
 """
 
 import asyncio
+import json
 import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Form, HTTPException
+from fastapi import Body, Depends, FastAPI, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import esl, jobs, tts
+from . import db, esl, flow as flow_mod, ivr, jobs, tts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("caller")
@@ -40,9 +47,15 @@ WEB_PASSWORD = os.environ.get("WEB_PASSWORD") or secrets.token_urlsafe(12)
 if not os.environ.get("WEB_PASSWORD"):
     logger.warning("WEB_PASSWORD not set — generated one for this run: %s", WEB_PASSWORD)
 
-ESL_HOST = os.environ.get("ESL_HOST", "127.0.0.1")
-ESL_PORT = int(os.environ.get("ESL_PORT", "8021"))
-ESL_PASSWORD = os.environ.get("ESL_PASSWORD", "")
+# On a fresh DB, seed one SIP profile from the optional .env defaults (SIP_*
+# matter only here; afterwards profiles live in the DB, as in v1).
+_ENV_SEED = {
+    "name": "default",
+    "server": os.environ.get("SIP_SERVER", ""),
+    "port": os.environ.get("SIP_PORT", "5060"),
+    "username": os.environ.get("SIP_USER", ""),
+    "password": os.environ.get("SIP_PASSWORD", ""),
+}
 
 _security = HTTPBasic()
 
@@ -57,38 +70,26 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(_security)):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    db.init(seed_profile=_ENV_SEED)
+    db.mark_interrupted_on_startup()  # crash mid-campaign -> resumable, not running
+    app.state.ivr_server = await ivr.start_server(jobs.IVR_HOST, jobs.IVR_PORT)
     yield
-    client = getattr(app.state, "esl_client", None)
-    if client:
-        await client.close()
+    app.state.ivr_server.close()
+    await app.state.ivr_server.wait_closed()
+    await esl.close_shared()
 
 
 app = FastAPI(dependencies=[Depends(require_auth)], lifespan=lifespan)
 
-_esl_lock = asyncio.Lock()
-_call_lock = asyncio.Lock()  # one PoC call at a time (mirrors v1's one campaign)
-
-
-async def get_esl():
-    """Shared inbound ESL connection, (re)established on demand.
-
-    FreeSWITCH may boot slower than this container, so the connection is lazy
-    instead of a hard startup dependency.
-    """
-    async with _esl_lock:
-        client = getattr(app.state, "esl_client", None)
-        if client and client.connected:
-            return client
-        client = esl.InboundClient(ESL_HOST, ESL_PORT, ESL_PASSWORD)
-        await client.connect()
-        app.state.esl_client = client
-        return client
+_call_lock = asyncio.Lock()  # one ad-hoc PoC call at a time
 
 
 @app.get("/")
 def index():
     return FileResponse(INDEX_PATH, media_type="text/html")
 
+
+# --- TTS preview ----------------------------------------------------------------
 
 @app.post("/preview")
 def preview(
@@ -108,6 +109,84 @@ def preview(
     tts.synthesize_native(text, voice, out, speed=speed, steps=steps, silence=silence)
     return {"voice": voice, "url": f"/audio/preview_{voice}.wav", "secs": tts.wav_seconds(out)}
 
+
+# --- Campaign (§15) ---------------------------------------------------------------
+
+@app.post("/start")
+async def start(payload: dict = Body(...)):
+    name = (payload.get("name") or "").strip() or "Кампанія"
+    message = (payload.get("message") or "").strip()
+    voice = payload.get("voice") or tts.DEFAULT_VOICE
+    campaign_type = payload.get("campaign_type") or "info"
+    if not message:
+        return JSONResponse({"error": "Порожній текст повідомлення"}, status_code=400)
+    if voice not in tts.VOICES:
+        return JSONResponse({"error": f"Невідомий голос {voice}"}, status_code=400)
+    if campaign_type not in ("info", "operator"):
+        return JSONResponse({"error": f"Невідомий тип кампанії {campaign_type}"},
+                            status_code=400)
+
+    raw_numbers = payload.get("numbers") or []
+    if isinstance(raw_numbers, str):
+        raw_numbers = raw_numbers.splitlines()
+    numbers, bad = [], []
+    for raw in raw_numbers:
+        num = jobs.normalize_number(str(raw))
+        (numbers if num else bad).append(num or str(raw))
+    if bad:
+        return JSONResponse({"error": f"Некоректні номери: {', '.join(bad[:5])}"},
+                            status_code=400)
+    if not numbers:
+        return JSONResponse({"error": "Вкажіть хоча б один номер"}, status_code=400)
+
+    try:
+        max_concurrent = int(payload.get("max_concurrent") or 1)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "max_concurrent має бути числом"}, status_code=400)
+    if not 1 <= max_concurrent <= 5:
+        return JSONResponse({"error": "max_concurrent поза межами 1..5"}, status_code=400)
+
+    profile_id = payload.get("profile_id") or db.default_profile_id()
+    profile = db.get_profile(profile_id)
+    if profile is None:
+        return JSONResponse({"error": "SIP-профіль не знайдено"}, status_code=400)
+
+    try:
+        compiled = flow_mod.compile_form(message, voice, payload.get("ivr"))
+    except flow_mod.FlowError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "Некоректна IVR-форма"}, status_code=400)
+
+    if jobs.campaign_running():
+        return JSONResponse({"detail": "campaign already running"}, status_code=409)
+    campaign_id = db.create_campaign(
+        name, campaign_type, message, voice, compiled,
+        profile["id"], f"{profile['username']}@{profile['server']}",
+        max_concurrent, numbers)
+    err = jobs.start_campaign(campaign_id)
+    if err:  # raced with another start
+        db.set_campaign_status(campaign_id, "stopped", error=err, finished=True)
+        return JSONResponse({"detail": err}, status_code=409)
+    return {"campaign_id": campaign_id}
+
+
+@app.get("/status")
+async def status():
+    snap = jobs.snapshot()
+    # keep the stage-1 health info: is the engine reachable at all?
+    try:
+        client = await esl.shared_client()
+        st = await client.api("status")
+        snap["esl_connected"] = True
+        snap["freeswitch"] = st.strip().splitlines()[0] if st.strip() else ""
+    except Exception as exc:  # noqa: BLE001 — health endpoint must not 500
+        snap["esl_connected"] = False
+        snap["esl_error"] = exc.__class__.__name__
+    return snap
+
+
+# --- stage-1 PoC: one ad-hoc call -------------------------------------------------
 
 @app.post("/call")
 async def call(
@@ -141,7 +220,7 @@ async def call(
             return JSONResponse({"error": "Помилка синтезу"}, status_code=500)
 
         try:
-            client = await get_esl()
+            client = await esl.shared_client()
         except Exception:
             logger.exception("ESL connection failed")
             return JSONResponse(
@@ -151,19 +230,123 @@ async def call(
     return {"ok": True, "number": num, **result}
 
 
-@app.get("/status")
-async def status():
-    """PoC health snapshot; becomes the campaign snapshot at stage 2."""
-    out = {"phase": "idle", "esl_connected": False}
-    try:
-        client = await get_esl()
-        st = await client.api("status")
-        out["esl_connected"] = True
-        out["freeswitch"] = st.strip().splitlines()[0] if st.strip() else ""
-    except Exception as exc:  # noqa: BLE001 — health endpoint must not 500
-        out["error"] = f"ESL: {exc.__class__.__name__}"
-    return out
+# --- SIP profiles ------------------------------------------------------------------
 
+@app.get("/config")
+def config():
+    return {"profiles": db.list_profiles(), "default_id": db.default_profile_id()}
+
+
+@app.post("/config/profiles")
+def create_profile(
+    name: str = Form(...),
+    server: str = Form(...),
+    port: str = Form("5060"),
+    username: str = Form(...),
+    password: str = Form(""),
+    is_default: bool = Form(False),
+):
+    err = _validate_profile(name, server, port, username)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    try:
+        pid = db.create_profile(name.strip(), server.strip(), int(port),
+                                username.strip(), password, is_default)
+    except Exception:
+        return JSONResponse({"error": f"Профіль «{name}» уже існує"}, status_code=409)
+    return {"ok": True, "id": pid}
+
+
+@app.post("/config/profiles/{profile_id}")
+def update_profile(
+    profile_id: int,
+    name: str = Form(...),
+    server: str = Form(...),
+    port: str = Form("5060"),
+    username: str = Form(...),
+    password: str = Form(""),   # blank => keep the stored password
+    is_default: bool = Form(False),
+):
+    if db.get_profile(profile_id) is None:
+        return JSONResponse({"error": "Профіль не знайдено"}, status_code=404)
+    err = _validate_profile(name, server, port, username)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    try:
+        db.update_profile(profile_id, name.strip(), server.strip(), int(port),
+                          username.strip(), password, is_default)
+    except Exception:
+        return JSONResponse({"error": f"Профіль «{name}» уже існує"}, status_code=409)
+    return {"ok": True}
+
+
+@app.delete("/config/profiles/{profile_id}")
+def delete_profile(profile_id: int):
+    db.delete_profile(profile_id)
+    return {"ok": True}
+
+
+def _validate_profile(name, server, port, username):
+    if not name.strip():
+        return "Вкажіть назву профілю"
+    if not server.strip() or not username.strip():
+        return "Вкажіть сервер і логін"
+    if not str(port).isdigit() or not 0 < int(port) < 65536:
+        return f"Некоректний порт {port}"
+    return None
+
+
+# --- History -----------------------------------------------------------------------
+
+@app.get("/campaigns")
+def campaigns():
+    return {"campaigns": db.list_campaigns()}
+
+
+@app.get("/campaigns/{campaign_id}")
+def campaign(campaign_id: int):
+    c = db.get_campaign(campaign_id)
+    if c is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    item = {k: c[k] for k in c.keys() if k != "ivr_flow"}
+    return {**item,
+            "counts": db.counts(campaign_id),
+            "numbers": db.campaign_numbers(campaign_id)}
+
+
+@app.post("/campaigns/{campaign_id}/retry-failed")
+async def retry_failed(campaign_id: int):
+    c = db.get_campaign(campaign_id)
+    if c is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    failed = [r["number"] for r in db.campaign_numbers(campaign_id)
+              if r["status"] in db.RETRYABLE]  # optout is NEVER retried (§8)
+    if not failed:
+        return JSONResponse({"error": "Немає невдалих номерів для повтору"}, status_code=400)
+    if c["profile_id"] is None or db.get_profile(c["profile_id"]) is None:
+        return JSONResponse({"error": "SIP-профіль цієї кампанії вже видалено"}, status_code=400)
+    if jobs.campaign_running():
+        return JSONResponse({"detail": "campaign already running"}, status_code=409)
+    new_id = db.create_campaign(
+        f"{c['name']} (повтор)", c["campaign_type"], c["message_text"], c["voice"],
+        json.loads(c["ivr_flow"]), c["profile_id"], c["profile_label"],
+        c["max_concurrent"], failed)
+    err = jobs.start_campaign(new_id)
+    if err:
+        db.set_campaign_status(new_id, "stopped", error=err, finished=True)
+        return JSONResponse({"detail": err}, status_code=409)
+    return {"ok": True, "campaign_id": new_id, "count": len(failed)}
+
+
+@app.post("/campaigns/{campaign_id}/resume")
+async def resume(campaign_id: int):
+    err = jobs.resume_campaign(campaign_id)
+    if err:
+        return JSONResponse({"error": err}, status_code=409)
+    return {"ok": True}
+
+
+# --- audio ---------------------------------------------------------------------
 
 @app.get("/audio/{name}")
 def audio(name: str):

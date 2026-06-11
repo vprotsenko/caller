@@ -54,6 +54,33 @@ def test_build_originate_cmd_shape():
     assert cmd.endswith("loopback/9999/default &playback(/app/audio/call.wav)")
 
 
+def test_build_campaign_originate_cmd_hands_off_to_socket():
+    cmd = jobs.build_campaign_originate_cmd(
+        "loopback/9999/default", "uuid-1", ivr_host="127.0.0.1", ivr_port=8084)
+    assert "origination_uuid=uuid-1" in cmd
+    assert cmd.endswith("loopback/9999/default &socket(127.0.0.1:8084 async full)")
+
+
+@pytest.mark.parametrize("outcome,expected", [
+    ({"mark": "optout", "transferred": False}, "optout"),
+    ({"mark": None, "transferred": True}, "transferred"),
+    ({"mark": None, "transferred": False}, "answered"),
+    ({}, "answered"),
+    # optout wins: the caller asked out even if an operator was reached
+    ({"mark": "optout", "transferred": True}, "optout"),
+])
+def test_outcome_status(outcome, expected):
+    assert jobs.outcome_status(outcome) == expected
+
+
+def test_prompt_path_is_cache_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs, "AUDIO_DIR", str(tmp_path))
+    a = jobs.prompt_path("Привіт", "F3")
+    assert a == jobs.prompt_path("Привіт", "F3")      # stable
+    assert a != jobs.prompt_path("Привіт!", "F3")     # text changes the key
+    assert a != jobs.prompt_path("Привіт", "M1")      # voice changes the key
+
+
 # --- hangup cause -> status (Plan.md §6) -----------------------------------------
 
 @pytest.mark.parametrize("cause,answered,expected", [

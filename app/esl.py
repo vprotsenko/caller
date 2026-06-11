@@ -18,9 +18,14 @@ included in raised exceptions.
 import asyncio
 import collections
 import logging
+import os
 import urllib.parse
 
 logger = logging.getLogger(__name__)
+
+ESL_HOST = os.environ.get("ESL_HOST", "127.0.0.1")
+ESL_PORT = int(os.environ.get("ESL_PORT", "8021"))
+ESL_PASSWORD = os.environ.get("ESL_PASSWORD", "")
 
 
 class ESLError(Exception):
@@ -244,3 +249,29 @@ class InboundClient:
                 pass
             self._writer = None
         self._fail_pending(ESLError("ESL connection closed"))
+
+
+# --- shared module-level connection --------------------------------------------
+# Both the HTTP routes (/status) and the campaign worker use one inbound
+# connection; it is lazy (FreeSWITCH may boot slower than this container) and
+# re-established on demand after a drop.
+
+_shared = None
+_shared_lock = asyncio.Lock()
+
+
+async def shared_client():
+    global _shared
+    async with _shared_lock:
+        if _shared is None or not _shared.connected:
+            client = InboundClient(ESL_HOST, ESL_PORT, ESL_PASSWORD)
+            await client.connect()
+            _shared = client
+        return _shared
+
+
+async def close_shared():
+    global _shared
+    if _shared is not None:
+        await _shared.close()
+        _shared = None
