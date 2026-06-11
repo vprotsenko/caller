@@ -30,6 +30,12 @@ AUDIO_DIR = os.environ.get("AUDIO_DIR", "/app/audio")
 DIAL_STRING_TEMPLATE = os.environ.get(
     "DIAL_STRING_TEMPLATE", "sofia/gateway/{gw}/{number}")
 ORIGINATE_TIMEOUT = int(os.environ.get("ORIGINATE_TIMEOUT", "30"))
+# Caller ID presented to the trunk. Most providers REJECT outbound calls whose
+# From number isn't a DID provisioned on the account (CALL_REJECTED / 403), so
+# set CALLER_ID_NUMBER to your trunk's number. Empty -> not set (the gateway's
+# from-user is used, which many trunks decline).
+CALLER_ID_NUMBER = os.environ.get("CALLER_ID_NUMBER", "").strip()
+CALLER_ID_NAME = os.environ.get("CALLER_ID_NAME", "").strip()
 # Extra channel vars prepended to every originate. Empty in production (the
 # trunk negotiates codecs); the loopback E2E env sets e.g.
 # absolute_codec_string=PCMA so the loopback leg and the SIP operator leg share
@@ -117,6 +123,10 @@ def _originate_vars(call_uuid):
         f"originate_timeout={ORIGINATE_TIMEOUT}",
         "ignore_early_media=true",
     ]
+    if CALLER_ID_NUMBER:
+        parts.append(f"origination_caller_id_number={CALLER_ID_NUMBER}")
+    if CALLER_ID_NAME:
+        parts.append(f"origination_caller_id_name='{CALLER_ID_NAME}'")
     if ORIGINATE_EXTRA_VARS:
         parts.append(ORIGINATE_EXTRA_VARS)
     return ",".join(parts)

@@ -64,6 +64,21 @@ def test_build_campaign_originate_cmd_hands_off_to_socket():
     assert cmd.endswith("loopback/9999/default &socket(127.0.0.1:8084 async full)")
 
 
+def test_originate_vars_include_caller_id(monkeypatch):
+    monkeypatch.setattr(jobs, "CALLER_ID_NUMBER", "380441234567")
+    monkeypatch.setattr(jobs, "CALLER_ID_NAME", "Acme")
+    cmd = jobs.build_originate_cmd("sofia/gateway/gw/3", "/a.wav", "u1")
+    assert "origination_caller_id_number=380441234567" in cmd
+    assert "origination_caller_id_name='Acme'" in cmd
+
+
+def test_originate_vars_no_caller_id_when_unset(monkeypatch):
+    monkeypatch.setattr(jobs, "CALLER_ID_NUMBER", "")
+    monkeypatch.setattr(jobs, "CALLER_ID_NAME", "")
+    cmd = jobs.build_originate_cmd("sofia/gateway/gw/3", "/a.wav", "u1")
+    assert "caller_id" not in cmd
+
+
 @pytest.mark.parametrize("outcome,expected", [
     ({"mark": "optout", "transferred": False}, "optout"),
     ({"mark": None, "transferred": True}, "transferred"),

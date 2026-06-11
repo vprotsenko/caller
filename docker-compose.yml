@@ -40,6 +40,9 @@ services:
       - ESL_PASSWORD=${ESL_PASSWORD:?set ESL_PASSWORD in .env}
       # {gw} = gateway генерований з обраного SIP-профілю (app/gateways.py).
       - DIAL_STRING_TEMPLATE=${DIAL_STRING_TEMPLATE:-sofia/gateway/{gw}/{number}}
+      # Caller ID транка (DID): без нього провайдер часто ріже з CALL_REJECTED.
+      - CALLER_ID_NUMBER=${CALLER_ID_NUMBER:-}
+      - CALLER_ID_NAME=${CALLER_ID_NAME:-}
       - ORIGINATE_EXTRA_VARS=${ORIGINATE_EXTRA_VARS:-}
       - BRIDGE_EXTRA_VARS=${BRIDGE_EXTRA_VARS:-}
       - AMD_ENABLED=${AMD_ENABLED:-1}
