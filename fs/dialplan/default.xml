@@ -1,9 +1,9 @@
-<!-- Dialplan майже порожній (Plan.md §3): вихідні дзвінки створює контролер
-     через originate, дзвінок керується ESL'ом, не dialplan'ом. -->
+<!-- The dialplan is almost empty: outbound calls are created by the
+     controller via originate; the call is driven by ESL, not by the dialplan. -->
 <include>
-  <!-- Контекст для loopback E2E-тестів без транка (§16 рівень 4):
-       originate loopback/9999/default &playback(...) — B-нога відповідає і
-       паркується, A-нога грає WAV; жодного зовнішнього дзвінка. -->
+  <!-- Context for loopback E2E tests without a trunk (verification level 4):
+       originate loopback/9999/default &playback(...) — the B leg answers and
+       parks, the A leg plays the WAV; no external call at all. -->
   <context name="default">
     <extension name="loopback_test_answer">
       <condition field="destination_number" expression="^9999$">
@@ -13,8 +13,8 @@
     </extension>
   </context>
 
-  <!-- Вхідні з транка: dialer тільки дзвонить сам, нічого не маршрутизуємо.
-       Глоб нижче підхоплює додаткові файли (зокрема тестові заглушки §16). -->
+  <!-- Inbound from the trunk: the dialer only places calls itself, we route
+       nothing. The glob below picks up extra files (incl. the test stubs). -->
   <context name="public">
     <X-PRE-PROCESS cmd="include" data="public/*.xml"/>
   </context>

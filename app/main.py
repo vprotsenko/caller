@@ -1,17 +1,17 @@
-"""FastAPI entry point — stages 1–2 (Plan.md §8, §15).
+"""FastAPI entry point — stages 1–2.
 
 Routes (all behind HTTP Basic Auth, same scheme as v1):
   GET  /              -> static/index.html
   POST /preview       -> synthesize the message, return an audio URL
   POST /call          -> stage-1 PoC: one ad-hoc call playing the message
-  POST /start         -> start a campaign (JSON body, §15); 409 if one runs
-  GET  /status        -> active-or-latest campaign snapshot (§15)
+  POST /start         -> start a campaign (JSON body); 409 if one runs
+  GET  /status        -> active-or-latest campaign snapshot
   GET  /audio/{name}  -> serve a synthesized WAV
 
 SIP profiles:
   GET /config, POST /config/profiles, POST /config/profiles/{id},
   DELETE /config/profiles/{id}      (passwords: write-only, only password_set
-                                     ever goes back — Plan.md §4)
+                                     ever goes back)
 History:
   GET /campaigns, GET /campaigns/{id},
   POST /campaigns/{id}/retry-failed (never touches optout),
@@ -19,7 +19,7 @@ History:
 
 WEB_PASSWORD comes from the environment; if unset, a random one is generated
 and logged so the app is never left open. NOTE: without TLS in front, Basic
-Auth credentials travel in cleartext (POC trade-off, Plan.md §12).
+Auth credentials travel in cleartext (POC trade-off).
 """
 
 import asyncio
@@ -91,9 +91,9 @@ _STATIC_TYPES = {".js": "application/javascript", ".css": "text/css",
                  ".html": "text/html"}
 
 
-# no-cache = «ревалідуй перед використанням» (з ETag від FileResponse це 304):
-# без нього браузер після редеплою тримає стару app.js до евристичного
-# протухання, і нова розмітка лишається без обробників (порожній IVR-редактор)
+# no-cache = "revalidate before use" (a 304 with FileResponse's ETag): without
+# it the browser keeps the old app.js after a redeploy until heuristic expiry,
+# and the new markup is left without its handlers (an empty IVR editor)
 _NO_CACHE = {"Cache-Control": "no-cache"}
 
 
@@ -133,13 +133,13 @@ def preview(
     try:
         tts.synthesize_native(text, voice, out, speed=speed, steps=steps,
                               silence=silence)
-    except Exception:  # noqa: BLE001 — модель може відкинути параметри/текст
+    except Exception:  # noqa: BLE001 — the model may reject the params/text
         logger.exception("preview synthesis failed")
         return JSONResponse({"error": "Помилка синтезу"}, status_code=500)
     return {"voice": voice, "url": f"/audio/preview_{voice}.wav", "secs": tts.wav_seconds(out)}
 
 
-# --- Scenario content (спільне для /scenarios і /start, §15) -----------------------
+# --- Scenario content (shared by /scenarios and /start) ----------------------------
 
 def _parse_scenario_content(payload):
     """Validate message/voice/type/voice_params/ivr; compile the IVR form as a
@@ -178,7 +178,7 @@ def _parse_scenario_content(payload):
     }, None
 
 
-# --- Scenarios (бібліотека збережених варіантів кампаній) --------------------------
+# --- Scenarios (library of saved campaign variants) --------------------------------
 
 @app.get("/scenarios")
 def scenarios_list():
@@ -226,11 +226,11 @@ def scenario_delete(scenario_id: int):
     return {"ok": True}
 
 
-# --- Campaign (§15) ---------------------------------------------------------------
+# --- Campaign ---------------------------------------------------------------------
 
 @app.post("/start")
 async def start(payload: dict = Body(...)):
-    # запуск зі збереженого сценарію (UI) або з інлайн-полів (call.yml, старі клієнти)
+    # start from a saved scenario (UI) or from inline fields (call.yml, old clients)
     scenario = None
     if payload.get("scenario_id") is not None:
         scenario = db.get_scenario(payload["scenario_id"])
@@ -301,7 +301,7 @@ async def status():
 
 
 async def _operator_states(client):
-    """Operators with live registration + busy flags (Plan.md §15)."""
+    """Operators with live registration + busy flags."""
     busy = jobs.busy_extensions()
     out = []
     for op in db.list_operators():
@@ -426,7 +426,7 @@ def _validate_profile(name, server, port, username):
     return None
 
 
-# --- Operators (§15, stage 3) ------------------------------------------------------
+# --- Operators (stage 3) -----------------------------------------------------------
 
 @app.get("/config/operators")
 async def list_operators():
@@ -505,7 +505,7 @@ async def retry_failed(campaign_id: int):
     if c is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     failed = [r["number"] for r in db.campaign_numbers(campaign_id)
-              if r["status"] in db.RETRYABLE]  # optout is NEVER retried (§8)
+              if r["status"] in db.RETRYABLE]  # optout is NEVER retried
     if not failed:
         return JSONResponse({"error": "Немає невдалих номерів для повтору"}, status_code=400)
     if c["profile_id"] is None or db.get_profile(c["profile_id"]) is None:

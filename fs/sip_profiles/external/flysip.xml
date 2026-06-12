@@ -1,7 +1,7 @@
-<!-- Перший транк: креди з .env через fs/vars.xml (Plan.md §3).
-     Без кредів у .env gateway піднімається з заглушками і register=false —
-     профіль живий, дзвінки неможливі (досить для локальних тестів).
-     Керування кількома профілями з UI — етап 5 (генерація цих файлів + rescan). -->
+<!-- First trunk: creds come from .env via fs/vars.xml.
+     Without creds in .env the gateway comes up with placeholders and register=false —
+     the profile is alive, calls are impossible (enough for local tests).
+     Managing multiple profiles from the UI is stage 5 (generating these files + rescan). -->
 <include>
   <gateway name="flysip">
     <param name="proxy" value="$${sip_gw_server}:$${sip_gw_port}"/>

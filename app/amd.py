@@ -1,14 +1,14 @@
-"""Answering-machine detection policy (Plan.md §6, stage 4).
+"""Answering-machine detection policy (stage 4).
 
 Pure decision logic, separated from FreeSWITCH so it is unit-tested without a
-live engine (§16 level 1). The actual classification runs in mod_amd (compiled
+live engine. The actual classification runs in mod_amd (compiled
 into the freeswitch image via Dockerfile.freeswitch); this module only maps its
 verdict + the campaign type to the next action.
 
 Verdicts (mod_amd `amd_result` channel variable):
   HUMAN    — a person answered
   MACHINE  — an answering machine / voicemail
-  NOTSURE  — inconclusive (treated as human: we never drop a doubtful call, §6)
+  NOTSURE  — inconclusive (treated as human: we never drop a doubtful call)
   (anything else / mod_amd absent -> treated as HUMAN)
 """
 
@@ -21,7 +21,7 @@ CONTINUE = "continue"        # run the IVR flow as normal
 VOICEMAIL = "voicemail"      # info campaign: drop the message after the beep
 MACHINE_HANGUP = "machine_hangup"  # operator campaign: hang up on a machine
 
-# action -> terminal status when the action itself is terminal (§4)
+# action -> terminal status when the action itself is terminal
 STATUS = {VOICEMAIL: "voicemail-left", MACHINE_HANGUP: "machine-hangup"}
 
 
@@ -36,7 +36,7 @@ def normalize_verdict(raw):
 
 
 def decide(verdict, campaign_type):
-    """What to do after AMD for a given campaign type (§6).
+    """What to do after AMD for a given campaign type.
 
     MACHINE:  info -> drop voicemail; operator -> hang up.
     HUMAN/NOTSURE: always continue (doubtful calls are not dropped).

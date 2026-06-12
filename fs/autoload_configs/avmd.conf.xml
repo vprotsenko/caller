@@ -1,6 +1,6 @@
 <configuration name="avmd.conf" description="AVMD config">
-  <!-- vanilla-дефолти; тюнінг порогів — етап 4, на реальних автовідповідачах
-       (Plan.md §11), задокументувати підібрані значення тут -->
+  <!-- vanilla defaults; threshold tuning is stage 4, on real answering machines;
+       document the chosen values here -->
   <settings>
     <param name="debug" value="0"/>
     <param name="report_status" value="1"/>

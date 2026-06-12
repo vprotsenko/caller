@@ -1,5 +1,5 @@
 """SQLite layer: counters, retry set, optout protection, interrupted marking
-(§16 level 1). Runs on a throwaway DB file per test."""
+(verification level 1). Runs on a throwaway DB file per test."""
 
 import pytest
 
@@ -106,7 +106,7 @@ def test_active_campaign_id():
     assert db.latest_campaign_id() == cid
 
 
-# --- scenarios (бібліотека збережених варіантів кампаній) --------------------------
+# --- scenarios (the library of saved campaign variants) ----------------------------
 
 IVR_FORM = {"timeout_sec": 5, "max_repeats": 2,
             "menu": {"options": [{"digit": "1", "action": "operator"}]}}
@@ -123,7 +123,7 @@ def test_scenario_roundtrip():
     assert s["name"] == "Акція"
     assert s["message"] == "Привіт"
     assert s["voice_params"] == VP
-    assert s["ivr"] == IVR_FORM          # форма (§15), не скомпільований граф
+    assert s["ivr"] == IVR_FORM          # the API form, not the compiled graph
 
 
 def test_scenario_list_sorted_and_full():
@@ -131,7 +131,7 @@ def test_scenario_list_sorted_and_full():
     make_scenario("А")
     names = [s["name"] for s in db.list_scenarios()]
     assert names == ["А", "Б"]
-    assert all("ivr" in s for s in db.list_scenarios())  # дайджест UI рахує з ivr
+    assert all("ivr" in s for s in db.list_scenarios())  # UI digest derives from ivr
 
 
 def test_scenario_unique_name():
@@ -152,7 +152,8 @@ def test_scenario_update_and_delete():
 
 
 def test_campaign_keeps_scenario_snapshot():
-    """Назва сценарію в кампанії — знімок: переживає видалення сценарію."""
+    """The scenario name in a campaign is a snapshot: it survives the
+    scenario's deletion."""
     sid = make_scenario()
     pid = db.create_profile("t2", "sip.example", 5060, "u", "pw", True)
     cid = db.create_campaign("К", "info", "Привіт", "F3", FLOW, pid, "u@s", 1,
@@ -167,7 +168,7 @@ def test_campaign_keeps_scenario_snapshot():
 
 
 def test_campaign_migration_adds_columns(tmp_path):
-    """Стара БД без scenario-колонок мігрує на льоту (ALTER TABLE)."""
+    """An old DB without the scenario columns migrates on the fly (ALTER TABLE)."""
     import sqlite3
     db.close()
     old = sqlite3.connect(db.DB_PATH)

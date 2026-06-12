@@ -1,63 +1,64 @@
-# Дзвонилка 2.0 (FreeSWITCH + ESL)
+# Dialer 2.0 (FreeSWITCH + ESL)
 
-Autodialer комерційного рівня: TTS-повідомлення (Supertonic, українська),
-IVR з DTMF, перемикання на оператора, AMD, повна статистика по кампаніях.
-Технічне завдання — [Plan.md](Plan.md); правила для агента — [CLAUDE.md](CLAUDE.md).
+A commercial-grade autodialer: TTS messages (Supertonic, Ukrainian), IVR with
+DTMF, transfer to a live operator, AMD, full per-campaign statistics.
+The agent rules are [CLAUDE.md](CLAUDE.md).
 
-**Стан: етапи 1–5 реалізовані** (PoC → IVR-движок → оператор/bridge → AMD →
-повний UI з кампаніями, історією, профілями й операторами + Ansible). Перевірені
-рівні §16 1–4; реальні дзвінки/аудіо/AMD на живій пошті — рівень 5 (людина з
-телефоном на Linux-хості).
+**Status: stages 1–5 implemented** (PoC → IVR engine → operator/bridge → AMD →
+full UI with campaigns, history, profiles and operators + Ansible). Verification
+levels 1–4 pass; real calls/audio/AMD against live voicemail are level 5
+(a human with a phone on a Linux host).
 
-## Запуск
+## Running
 
 ```bash
-cp .env.example .env      # заповнити WEB_PASSWORD, ESL_PASSWORD, SIP_* (FlySIP)
-docker compose up --build # Linux-хост із публічним IP (бойовий режим)
+cp .env.example .env      # fill in WEB_PASSWORD, ESL_PASSWORD, SIP_* (FlySIP)
+docker compose up --build # Linux host with a public IP (production mode)
 ```
 
-Локальна розробка на macOS (без реальних дзвінків — тільки UI/прев'ю/loopback):
+Local development on macOS (no real calls — UI/preview/loopback only):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.macos.yml up --build
 ```
 
-UI: http://localhost:8000 (Basic Auth — `WEB_USER`/`WEB_PASSWORD` з `.env`).
-Три вкладки: **Кампанія** (повідомлення + IVR-форма + набір + живий прогрес),
-**Налаштування** (SIP-профілі + оператори), **Історія** (кампанії, деталі по
-номерах, resume/retry-failed).
+UI: http://localhost:8000 (Basic Auth — `WEB_USER`/`WEB_PASSWORD` from `.env`).
+Three tabs: **Кампанія** (message + IVR form + dialing + live progress),
+**Налаштування** (SIP profiles + operators), **Історія** (campaigns,
+per-number details, resume/retry-failed).
 
-## Реальний AMD (опційно)
+## Real AMD (optional)
 
-Базовий FreeSWITCH-образ не містить `mod_amd`; без нього кожна відповідь
-трактується як HUMAN (дзвінок не скидається). Для класифікації автовідповідачів:
+The base FreeSWITCH image does not include `mod_amd`; without it every answer
+is treated as HUMAN (the call is never dropped). For answering-machine
+classification:
 
 ```bash
-docker build -f Dockerfile.freeswitch -t caller-freeswitch:amd .  # крихка збірка з сирців
+docker build -f Dockerfile.freeswitch -t caller-freeswitch:amd .  # fragile from-source build
 echo 'FREESWITCH_IMAGE=caller-freeswitch:amd' >> .env
 docker compose up -d
 ```
 
-## Перевірка (Plan.md §16)
+## Verification
 
 ```bash
-# рівень 1: юніт-тести без FreeSWITCH
+# level 1: unit tests, no FreeSWITCH
 docker compose run --rm app pytest -q
 
-# рівень 2-3: живі контейнери і валідний конфіг
+# levels 2-3: live containers and valid config
 docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "status"
 docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "sofia status"
 
-# рівень 4: E2E без транка (у .env: DIAL_STRING_TEMPLATE=loopback/{number}/default)
-#   запусти кампанію з UI на номер 9999; DTMF/AMD симулюються
-#   uuid_recv_dtmf <a-leg> 1   та   originate-змінною amd_test_result
+# level 4: E2E without a trunk (in .env: DIAL_STRING_TEMPLATE=loopback/{number}/default)
+#   start a campaign from the UI to number 9999; DTMF/AMD are simulated
+#   with uuid_recv_dtmf <a-leg> 1   and the amd_test_result originate variable
 ```
 
-Деплой і керування з командного рядка — [ansible/](ansible/) (deploy / call / status).
+Deployment and command-line control — [ansible/](ansible/) (deploy / call / status).
 
-## Секрети
+## Secrets
 
-`.env` і `data/` (SQLite із SIP- і операторськими паролями плейнтекстом) не
-комітяться і захищаються правами доступу. Згенеровані `fs/directory/default/*.xml`
-(паролі операторів) теж gitignored. Basic Auth без TLS — до продакшену
-поставити reverse proxy з TLS (Plan.md §12).
+`.env` and `data/` (SQLite with SIP and operator passwords in plaintext) are
+not committed and are protected by file permissions. The generated
+`fs/directory/default/*.xml` (operator passwords) are gitignored too. Basic
+Auth has no TLS — put a reverse proxy with TLS in front before production.

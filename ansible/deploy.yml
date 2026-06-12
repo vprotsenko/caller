@@ -1,22 +1,22 @@
 ---
-# Deploy Дзвонилка 2.0 (FreeSWITCH + контролер) на Ubuntu-хост у Docker.
-# Лише вбудовані модулі (без docker SDK / зовнішніх колекцій).
+# Deploy Dialer 2.0 (FreeSWITCH + controller) to an Ubuntu host in Docker.
+# Built-in modules only (no docker SDK / external collections).
 #
 #   cd caller/ansible && ansible-playbook deploy.yml
 #   ansible-playbook deploy.yml -e web_password='choose-your-own'
 #
-# Хост — Linux із ПУБЛІЧНИМ IP: обидва контейнери в network_mode: host, тож
-# SIP/RTP працюють напряму (Plan.md §10). .env оновлюється порядково
-# (lineinfile), тож SIP_*/ESL_PASSWORD, додані вручну на сервері, переживають
-# редеплой. Веб-логін/пароль друкуються в кінці.
+# The host is Linux with a PUBLIC IP: both containers run in network_mode: host,
+# so SIP/RTP work directly. .env is updated line-by-line
+# (lineinfile), so SIP_*/ESL_PASSWORD values added by hand on the server survive
+# a redeploy. The web login/password are printed at the end.
 - name: Deploy caller v2 (FreeSWITCH + app)
   hosts: caller
   gather_facts: true
   vars:
     app_dir: /opt/caller
     web_user: admin
-    # FreeSWITCH-образ: базовий (без mod_amd) за замовчуванням. Для реального
-    # AMD зібрати caller-freeswitch:amd і передати -e freeswitch_image=...
+    # FreeSWITCH image: the base one (without mod_amd) by default. For real
+    # AMD, build caller-freeswitch:amd and pass -e freeswitch_image=...
     freeswitch_image: "safarov/freeswitch:1.10.12"
     project_files:
       - requirements.txt
@@ -159,17 +159,17 @@
         - { key: ORIGINATE_EXTRA_VARS, value: "{{ originate_extra_vars | default('') }}" }
       no_log: true
 
-    # Recreate only what changed (Plan.md: швидкий редеплой). `up -d --build`
-    # перезбирає app і перестворює його контейнер, лише якщо змінився код/образ;
-    # FreeSWITCH (фіксований тег + bind-mount конфіг) compose сам НЕ чіпає.
+    # Recreate only what changed (fast redeploy). `up -d --build`
+    # rebuilds app and recreates its container only if the code/image changed;
+    # compose itself does NOT touch FreeSWITCH (pinned tag + bind-mounted config).
     - name: Build and (re)start the stack
       ansible.builtin.command: docker compose up -d --build
       args:
         chdir: "{{ app_dir }}"
       changed_when: true
 
-    # fs/ — bind-mount, тож compose не помічає змін; коли конфіг оновився,
-    # перестворюємо ЛИШЕ FreeSWITCH (модулі вантажаться тільки при рестарті).
+    # fs/ is a bind-mount, so compose does not notice changes; when the config
+    # has been updated, we recreate ONLY FreeSWITCH (modules load only on restart).
     - name: Recreate FreeSWITCH only if its config changed
       ansible.builtin.command: docker compose up -d --force-recreate --no-deps freeswitch
       args:
@@ -193,7 +193,7 @@
     - name: Done — credentials
       ansible.builtin.debug:
         msg:
-          - "Сайт:   http://{{ inventory_hostname }}:8000"
-          - "Логін:  {{ web_user }}"
-          - "Пароль: {{ web_password }}"
-          - "FreeSWITCH ESL підключено: {{ health.json.esl_connected | default('?') }}"
+          - "Site:     http://{{ inventory_hostname }}:8000"
+          - "Login:    {{ web_user }}"
+          - "Password: {{ web_password }}"
+          - "FreeSWITCH ESL connected: {{ health.json.esl_connected | default('?') }}"

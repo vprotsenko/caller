@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
-<!-- Дзвонилка 2.0: обрізаний vanilla-конфіг (Plan.md §3). Жодного chatplan,
-     languages, skinny тощо — тільки те, що потрібно autodialer'у. -->
+<!-- Dialer 2.0: trimmed-down vanilla config. No chatplan,
+     languages, skinny etc. — only what the autodialer needs. -->
 <document type="freeswitch/xml">
   <X-PRE-PROCESS cmd="include" data="vars.xml"/>
 

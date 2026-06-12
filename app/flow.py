@@ -1,4 +1,4 @@
-"""IVR scenario: form -> JSON compiler + validator (Plan.md §5, §15).
+"""IVR scenario: form -> JSON compiler + validator.
 
 The UI is a recursive parameterized form: a tree of menu levels, where every
 option can open one more level (action "menu"). This module compiles that tree
@@ -7,15 +7,15 @@ runtime interpreter (app/ivr.py) only ever sees that JSON — menus of any depth
 are just `menu` nodes whose branches point at other nodes, which the runtime
 supported from day one.
 
-The pre-tree form shape (operator/repeat/optout checkboxes, §15 first
+The pre-tree form shape (operator/repeat/optout checkboxes, first API
 version) is still accepted: _legacy_menu() converts it into one root level,
 so ansible/call.yml and old clients keep working.
 
 Node types are unchanged: play | menu | bridge | hangup.
-Pure functions — fully covered by pytest without FreeSWITCH (§16 level 1).
+Pure functions — fully covered by pytest without FreeSWITCH.
 """
 
-MAX_REPEATS_LIMIT = 5     # server-side cap (§5)
+MAX_REPEATS_LIMIT = 5     # server-side cap
 TIMEOUT_RANGE = (1, 30)   # seconds the menu waits for a digit
 NODE_TYPES = ("play", "menu", "bridge", "hangup")
 MAX_DEPTH = 4             # menu levels; deeper trees lose callers (IVR UX)
@@ -27,17 +27,18 @@ DEFAULT_MAX_REPEATS = 2
 DEFAULT_CONNECT_TEXT = "Зачекайте, з'єднуємо з оператором"
 DEFAULT_OPTOUT_TEXT = "Вас видалено зі списку"
 
-# Цифри словами — TTS читає їх надійніше, ніж "1"/"0" (ґотча етапу 3).
+# Digits as words — TTS reads them more reliably than "1"/"0" (stage 3 gotcha).
 DIGIT_WORDS = {"0": "нуль", "1": "один", "2": "два", "3": "три",
                "4": "чотири", "5": "п'ять", "6": "шість", "7": "сім",
                "8": "вісім", "9": "дев'ять"}
 
 ACTIONS = ("operator", "replay", "menu", "play", "back", "home", "optout", "hangup")
 
-# Шматки автогенерованого анонсу рівня. Без анонсу меню — мертва тиша:
-# play_and_get_digits грає лише silence_stream, і абонент не знає, що можна
-# щось натиснути. Опції menu/play описуються підписом (label) — для них
-# шаблон LABELLED_TEMPLATE. UI дзеркалить ці тексти у плейсхолдері.
+# Pieces of the auto-generated level announcement. Without an announcement the
+# menu is dead silence: play_and_get_digits plays only silence_stream, and the
+# callee has no idea anything can be pressed. menu/play options are described
+# by their caption (label) — those use the LABELLED_TEMPLATE. The UI mirrors
+# these texts in its placeholder.
 ANNOUNCE_TEMPLATES = {
     "operator": "Щоб з'єднатися з оператором, натисніть {digit}.",
     "replay": "Щоб прослухати ще раз, натисніть {digit}.",
@@ -75,7 +76,7 @@ def announce_for_options(options):
 
 
 def _legacy_menu(ivr):
-    """§15 first-version checkboxes -> one root level of the recursive form."""
+    """First-API-version checkboxes -> one root level of the recursive form."""
     operator = ivr.get("operator") or {}
     repeat = ivr.get("repeat") or {}
     optout = ivr.get("optout") or {}
@@ -108,12 +109,12 @@ def _int_field(value, default, what, where):
 
 
 def compile_form(message_text, voice, ivr=None, voice_params=None):
-    """Compile the §15 `ivr` form object into the §5 flow JSON.
+    """Compile the API `ivr` form object into the flow JSON.
 
     With no form (or no options) the flow degenerates to play-message ->
-    hangup — the v1 behaviour. `voice_params` (вже clamped upstream:
-    speed/steps/silence) лягають у КОЖЕН промпт — снапшот flow
-    самодостатній, resume/retry синтезують так само.
+    hangup — the v1 behaviour. `voice_params` (already clamped upstream:
+    speed/steps/silence) go into EVERY prompt — the flow snapshot is
+    self-contained, resume/retry synthesize the same way.
 
     Node/prompt names are path-based (`menu_3_1`, `info_3_1`), so nested
     levels never collide; the root content prompt keeps the name «main» —
@@ -166,8 +167,8 @@ def compile_form(message_text, voice, ivr=None, voice_params=None):
             raise FlowError(f"{where}: повторів {max_repeats} поза межами "
                             f"0..{MAX_REPEATS_LIMIT}")
 
-        # контент рівня: на корені — повідомлення кампанії (промпт «main»),
-        # глибше — необов'язковий level.text (рівень може бути чистим меню)
+        # level content: at the root — the campaign message (prompt «main»),
+        # deeper — an optional level.text (a level may be a pure menu)
         if not path:
             text, content_prompt = message_text, "main"
         else:
@@ -196,8 +197,8 @@ def compile_form(message_text, voice, ivr=None, voice_params=None):
             label = (opt.get("label") or "").strip()
 
             def need_label():
-                # автоанонс описує menu/play лише через підпис; без нього
-                # абонент не дізнається, що означає клавіша
+                # the auto-announcement describes menu/play only via the
+                # label; without one the callee never learns what the key means
                 if not announce and not label:
                     raise FlowError(
                         f"{where}: опція {digit} потребує підпису для "
@@ -226,7 +227,7 @@ def compile_form(message_text, voice, ivr=None, voice_params=None):
                 if parent_menu_node is None:
                     raise FlowError(
                         f"{where}: «головне меню» неможливе на верхньому рівні")
-                branches[digit] = "menu"  # кореневий menu-вузол (суфікс порожній)
+                branches[digit] = "menu"  # the root menu node (empty suffix)
             elif action == "hangup":
                 branches[digit] = "bye"
             elif action == "play":
@@ -277,7 +278,7 @@ def compile_form(message_text, voice, ivr=None, voice_params=None):
 
 
 def validate(flow):
-    """Server-side §5 checks; raises FlowError with a readable message.
+    """Server-side flow checks; raises FlowError with a readable message.
 
     Cycles in the graph are allowed (e.g. "2" -> replay message): the runtime
     bounds the number of node transitions instead (ivr.MAX_STEPS).

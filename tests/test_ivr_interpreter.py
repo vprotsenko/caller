@@ -1,4 +1,4 @@
-"""Flow interpreter against a scripted fake session (§16 level 1).
+"""Flow interpreter against a scripted fake session (verification level 1).
 
 No FreeSWITCH: the fake session records played prompts and serves DTMF digits
 from a script.
@@ -29,7 +29,8 @@ class FakeSession:
         self.played.append(path)
 
     async def wait_digit(self, timeout, prompt=None):
-        if prompt:  # PAGD грає анонс сам (barge-in); фейк рахує його як play
+        if prompt:  # PAGD plays the announce itself (barge-in); the fake
+            # counts it as a play
             await self.play(prompt)
         if not self.digits:
             return None
@@ -93,7 +94,7 @@ def make_flow(form=FORM):
 async def test_timeout_plays_message_and_hangs_up():
     session = FakeSession(digits=[])  # nobody presses anything
     outcome = await ivr.run_flow(session, make_flow(), FILES)
-    # анонс меню звучить на кожному з 3 раундів очікування (max_repeats=2)
+    # the menu announce plays on each of the 3 waiting rounds (max_repeats=2)
     assert session.played == ["/a/main.wav", "/a/menu.wav", "/a/menu.wav", "/a/menu.wav"]
     assert session.hung_up
     assert outcome["dtmf"] == ""
@@ -198,7 +199,7 @@ async def test_on_digit_callback_fires():
     assert seen == ["0"]
 
 
-# --- nested menu tree (рекурсивна форма §15) ---------------------------------------
+# --- nested menu tree (the recursive form) -----------------------------------------
 
 TREE_FORM = {
     "timeout_sec": 1,
@@ -224,17 +225,17 @@ def make_tree():
 
 
 async def test_tree_walk_submenu_info_back_optout():
-    # 3 → підменю (текст рівня + анонс), 1 → фраза і назад у те ж меню,
-    # 9 → назад у корінь, 0 → відписка
+    # 3 → submenu (level text + announce), 1 → phrase and back into the same
+    # menu, 9 → back to the root, 0 → optout
     flow, files = make_tree()
     session = FakeSession(digits=["3", "1", "9", "0"])
     outcome = await ivr.run_flow(session, flow, files)
     assert session.played == [
-        "/a/main.wav", "/a/menu.wav",          # корінь: повідомлення + анонс
-        "/a/text_3.wav", "/a/menu_3.wav",      # вхід у підменю
-        "/a/info_3_1.wav", "/a/menu_3.wav",    # фраза, then=stay → той самий рівень
-        "/a/menu.wav",                         # назад: анонс кореня (без повтору msg)
-        "/a/optout_ok_0.wav",                  # відписка
+        "/a/main.wav", "/a/menu.wav",          # root: message + announce
+        "/a/text_3.wav", "/a/menu_3.wav",      # entering the submenu
+        "/a/info_3_1.wav", "/a/menu_3.wav",    # phrase, then=stay → same level
+        "/a/menu.wav",                         # back: root announce (no msg replay)
+        "/a/optout_ok_0.wav",                  # optout
     ]
     assert outcome["dtmf"] == "3190"
     assert outcome["mark"] == "optout"
@@ -242,8 +243,9 @@ async def test_tree_walk_submenu_info_back_optout():
 
 
 async def test_tree_deep_wandering_survives_step_guard():
-    # блукання туди-сюди по дереву легітимне: ліміт кроків росте з графом
-    # (10 раундів × 3 переходи + вхід/вихід = 34 кроки > старого MAX_STEPS=30)
+    # wandering back and forth across the tree is legitimate: the step limit
+    # grows with the graph (10 rounds × 3 transitions + enter/exit = 34 steps
+    # > the old MAX_STEPS=30)
     flow, files = make_tree()
     session = FakeSession(digits=["3", "9"] * 10 + ["0"])
     outcome = await ivr.run_flow(session, flow, files)
@@ -251,7 +253,7 @@ async def test_tree_deep_wandering_survives_step_guard():
     assert outcome["dtmf"].endswith("0")
 
 
-# --- AMD step in run_call (§6, stage 4) -------------------------------------------
+# --- AMD step in run_call (stage 4) ------------------------------------------------
 
 def make_ctx(session_flow=None, campaign_type="info", amd_enabled=True):
     ctx = ivr.CallContext(1, session_flow or make_flow(), FILES,
@@ -263,7 +265,7 @@ async def test_amd_disabled_runs_flow_directly():
     session = FakeSession(digits=[])
     ctx = make_ctx(amd_enabled=False)
     outcome = await ivr.run_call(session, ctx)
-    # перед потоком — початкова тиша (ear-to-phone + медіа-реузгодження)
+    # before the flow — the initial silence (ear-to-phone + media renegotiation)
     assert session.played[0] == f"silence_stream://{ivr.LEAD_IN_MS}"
     assert session.played[1] == "/a/main.wav"  # flow ran
     assert outcome["amd_result"] is None

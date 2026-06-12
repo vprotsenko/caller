@@ -1,13 +1,13 @@
-"""Campaign worker (Plan.md §2, §6, §7) + the stage-1 single-call PoC.
+"""Campaign worker + the stage-1 single-call PoC.
 
 One campaign at a time (a second start gets a 409 upstream). The worker
 prerenders all flow prompts to WAV (hash cache — the campaign does not start
-if synthesis fails, §5), then dials pending numbers keeping at most
-`max_concurrent` calls in flight (§7), writing every outcome to SQLite as it
-happens (§6: durable, restart -> 'interrupted', resume is explicit).
+if synthesis fails), then dials pending numbers keeping at most
+`max_concurrent` calls in flight, writing every outcome to SQLite as it
+happens (durable, restart -> 'interrupted', resume is explicit).
 
 Pure helpers (number normalization, dial string, originate command, cause
-mapping) are unit-tested without FreeSWITCH (§16 level 1).
+mapping) are unit-tested without FreeSWITCH.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 AUDIO_DIR = os.environ.get("AUDIO_DIR", "/app/audio")
 # {gw} = gateway of the campaign's SIP profile, {number} = dialled number.
-# Tests override to loopback/{number}/default (no {gw}) — Plan.md §16 level 4.
+# The loopback E2E tests override to loopback/{number}/default (no {gw}).
 DIAL_STRING_TEMPLATE = os.environ.get(
     "DIAL_STRING_TEMPLATE", "sofia/gateway/{gw}/{number}")
 ORIGINATE_TIMEOUT = int(os.environ.get("ORIGINATE_TIMEOUT", "30"))
@@ -39,7 +39,7 @@ CALLER_ID_NAME = os.environ.get("CALLER_ID_NAME", "").strip()
 # Extra channel vars prepended to every originate. Empty in production (the
 # trunk negotiates codecs); the loopback E2E env sets e.g.
 # absolute_codec_string=PCMA so the loopback leg and the SIP operator leg share
-# a codec and the bridge needs no transcoding (Plan.md §16).
+# a codec and the bridge needs no transcoding.
 ORIGINATE_EXTRA_VARS = os.environ.get("ORIGINATE_EXTRA_VARS", "").strip()
 # Same idea for the operator bridge leg (loopback test pins a shared codec).
 BRIDGE_EXTRA_VARS = os.environ.get("BRIDGE_EXTRA_VARS", "").strip()
@@ -58,9 +58,9 @@ AMD_ENABLED = os.environ.get("AMD_ENABLED", "1") not in ("0", "false", "")
 _NUMBER_RE = re.compile(r"^\+?\d{3,15}$")
 
 # Supertonic rejects typographic apostrophes/dashes common in Ukrainian text
-# (U+02BC у «зʼєднати» тощо) — map them to supported ASCII before synthesis.
+# (U+02BC in «зʼєднати» etc.) — map them to supported ASCII before synthesis.
 _TEXT_REPLACEMENTS = str.maketrans({
-    "ʼ": "'",  # MODIFIER LETTER APOSTROPHE (український апостроф)
+    "ʼ": "'",  # MODIFIER LETTER APOSTROPHE (the Ukrainian apostrophe)
     "’": "'",  # RIGHT SINGLE QUOTATION MARK
     "‘": "'",
     "ʹ": "'",
@@ -79,9 +79,9 @@ def normalize_text(text):
     """Make typographic punctuation synthesizable (Supertonic rejects it)."""
     return (text or "").translate(_TEXT_REPLACEMENTS)
 
-# Hangup cause -> campaign_number.status (Plan.md §6). Anything else, or an
-# originate refused by the provider, is "failed" — often a billing/route
-# problem on the trunk, not an app bug.
+# Hangup cause -> campaign_number.status. Anything else, or an originate
+# refused by the provider, is "failed" — often a billing/route problem on
+# the trunk, not an app bug.
 _BUSY_CAUSES = {"USER_BUSY"}
 _NO_ANSWER_CAUSES = {"NO_ANSWER", "ORIGINATOR_CANCEL", "NO_USER_RESPONSE"}
 
@@ -185,7 +185,7 @@ def build_originate_cmd(dial_string, wav_path, call_uuid):
 
 def build_campaign_originate_cmd(dial_string, call_uuid,
                                  ivr_host=None, ivr_port=None):
-    """Campaign shape: hand the answered call to the outbound socket (§3)."""
+    """Campaign shape: hand the answered call to the outbound socket."""
     host = ivr_host or IVR_HOST
     port = ivr_port or IVR_PORT
     return (f"originate {{{_originate_vars(call_uuid)}}}"
@@ -193,7 +193,7 @@ def build_campaign_originate_cmd(dial_string, call_uuid,
 
 
 def outcome_status(outcome):
-    """Final status of an ANSWERED call from the IVR outcome (Plan.md §6)."""
+    """Final status of an ANSWERED call from the IVR outcome."""
     action = outcome.get("amd_action")
     if action in amd_mod.STATUS:        # voicemail-left / machine-hangup
         return amd_mod.STATUS[action]
@@ -208,9 +208,9 @@ def outcome_status(outcome):
 
 def prompt_path(text, voice, speed=tts.DEFAULT_SPEED, steps=tts.DEFAULT_STEPS,
                 silence=tts.DEFAULT_SILENCE):
-    # "|lead0" відрізняє промпти без вшитого lead-in від старого кешу з ним;
-    # генераційні параметри — частина ключа, інакше зміна швидкості віддасть
-    # старий WAV із кешу
+    # "|lead0" distinguishes prompts without a baked-in lead-in from the old
+    # cache that had it; the generation parameters are part of the key,
+    # otherwise a speed change would serve the old WAV from the cache
     digest = hashlib.sha1(
         f"{text}|{voice}|{tts.DEFAULT_LANG}|lead0|{speed}|{steps}|{silence}"
         .encode()).hexdigest()[:16]
@@ -221,7 +221,7 @@ def prerender_prompts(flow):
     """Synthesize every flow prompt to a telephony WAV (cache by hash).
 
     Returns {prompt_name: wav_path}. Raises if any synthesis fails — the
-    campaign must not start half-mute (§5). Prompts carry NO lead-in silence:
+    campaign must not start half-mute. Prompts carry NO lead-in silence:
     between menu rounds it reads as dead air; the initial ear-to-phone pause
     is played by the IVR itself (ivr.run_call, silence_stream)."""
     files = {}
@@ -340,8 +340,8 @@ async def _run_campaign(campaign_id):
             return
 
         # Materialize the campaign's SIP profile into a FreeSWITCH gateway and
-        # dial through it (Plan.md §3/§8). A loopback override template skips
-        # this (no {gw}); the static .env `flysip` gateway is the fallback.
+        # dial through it. A loopback override template skips this (no {gw});
+        # the static .env `flysip` gateway is the fallback.
         gateway = "flysip"
         if "{gw}" in DIAL_STRING_TEMPLATE:
             profile = db.get_profile(campaign["profile_id"])
@@ -375,7 +375,7 @@ async def _run_campaign(campaign_id):
         while not _active["stopping"]:
             allowed = max_concurrent
             if pool is not None:
-                # §7: no more new originates than free registered operators
+                # no more new originates than free registered operators
                 allowed = min(allowed, len(tasks) + await pool.free_count())
             while len(tasks) < allowed:
                 row = db.claim_next_pending(campaign_id)
@@ -486,7 +486,7 @@ async def _dial_number(client, row, flow, files, pool=None, campaign_type="info"
 
 
 def snapshot():
-    """Active-or-latest campaign state for GET /status (Plan.md §15)."""
+    """Active-or-latest campaign state for GET /status."""
     campaign_id = _active["campaign_id"] if campaign_running() else None
     campaign_id = campaign_id or db.latest_campaign_id()
     if campaign_id is None:

@@ -1,11 +1,11 @@
-"""IVR form -> flow compiler + validator (Plan.md §5, §15; §16 level 1)."""
+"""IVR form -> flow compiler + validator (verification level 1)."""
 
 import pytest
 
 from app import flow as flow_mod
 
 
-# --- legacy checkbox form (§15 first version, still accepted) ---------------------
+# --- legacy checkbox form (first version of the API form, still accepted) ---------
 
 FULL_FORM = {
     "operator": {"enabled": True, "connect_text": "Зачекайте"},
@@ -46,8 +46,9 @@ def test_compile_legacy_repeat_only():
 
 
 def test_compile_menu_gets_auto_announcement():
-    """Меню без анонсу = мертва тиша після повідомлення; компілятор зобов'язаний
-    додати промпт «menu» з автотекстом лише для увімкнених опцій."""
+    """A menu without an announcement = dead silence after the message; the
+    compiler is obliged to add a "menu" prompt whose auto-text covers only the
+    enabled options."""
     flow = flow_mod.compile_form("Привіт", "F3", FULL_FORM)
     assert flow["nodes"]["menu"]["prompt"] == "menu"
     assert flow["prompts"]["menu"]["text"] == (
@@ -67,8 +68,8 @@ def test_compile_menu_text_override():
 
 
 def test_compile_voice_params_reach_every_prompt():
-    """Снапшот flow самодостатній: resume/retry мають синтезувати з тими
-    самими параметрами, тож вони лягають у кожен промпт."""
+    """The flow snapshot is self-contained: resume/retry must synthesize with
+    the same parameters, so they go into every prompt."""
     vp = {"speed": 1.3, "steps": 16, "silence": 0.5}
     flow = flow_mod.compile_form("Привіт", "F3", FULL_FORM, voice_params=vp)
     for prompt in flow["prompts"].values():
@@ -107,10 +108,11 @@ def test_compile_rejects_bad_timeout():
         flow_mod.compile_form("Привіт", "F3", {**FULL_FORM, "timeout_sec": 0})
 
 
-# --- recursive tree form (§15 current version) -------------------------------------
+# --- recursive tree form (current version of the API form) --------------------------
 
 def tree_form():
-    """Дворівневе дерево: оператор/повтор/відписка + підменю «Графік роботи»."""
+    """A two-level tree: operator/replay/optout + a "Графік роботи" (working
+    hours) submenu."""
     return {
         "timeout_sec": 5,
         "max_repeats": 2,
@@ -138,20 +140,20 @@ def tree_form():
 def test_compile_tree_two_levels():
     flow = flow_mod.compile_form("Привіт", "F3", tree_form())
     root = flow["nodes"]["menu"]
-    assert root["branches"]["3"] == "msg_3"          # підменю з текстом → play-вхід
+    assert root["branches"]["3"] == "msg_3"          # submenu with text → play entry
     assert flow["nodes"]["msg_3"] == {"type": "play", "prompt": "text_3",
                                       "next": "menu_3"}
     sub = flow["nodes"]["menu_3"]
     assert sub["branches"]["1"] == "info_3_1"
-    assert sub["branches"]["9"] == "menu"            # «назад» → меню батька
+    assert sub["branches"]["9"] == "menu"            # "back" → the parent's menu
     assert flow["nodes"]["info_3_1"]["next"] == "menu_3"   # then=stay
     assert flow["prompts"]["text_3"]["text"].startswith("Працюємо")
     flow_mod.validate(flow)
 
 
 def test_compile_tree_root_keeps_main_prompt():
-    # voicemail-drop грає prompt «main» (ivr.CallContext.main_prompt) — корінь
-    # зобов'язаний зберігати це ім'я
+    # voicemail-drop plays the prompt "main" (ivr.CallContext.main_prompt) —
+    # the root is obliged to keep this name
     flow = flow_mod.compile_form("Привіт", "F3", tree_form())
     assert flow["start"] == "msg"
     assert flow["nodes"]["msg"]["prompt"] == "main"
@@ -187,7 +189,7 @@ def test_compile_tree_play_then_back_and_hangup():
     sub["options"].append({"digit": "2", "action": "play", "label": "Адреса",
                            "text": "Вулиця Зелена, один.", "then": "hangup"})
     flow = flow_mod.compile_form("Привіт", "F3", form)
-    assert flow["nodes"]["info_3_1"]["next"] == "menu"   # back → меню батька
+    assert flow["nodes"]["info_3_1"]["next"] == "menu"   # back → the parent's menu
     assert flow["nodes"]["info_3_2"]["next"] == "bye"
 
 
@@ -196,7 +198,7 @@ def test_compile_tree_per_level_timeout_and_repeats_override():
     form["menu"]["options"][2]["menu"]["timeout_sec"] = 10
     form["menu"]["options"][2]["menu"]["max_repeats"] = 0
     flow = flow_mod.compile_form("Привіт", "F3", form)
-    assert flow["nodes"]["menu"]["timeout_sec"] == 5      # глобальний дефолт
+    assert flow["nodes"]["menu"]["timeout_sec"] == 5      # the global default
     assert flow["nodes"]["menu_3"]["timeout_sec"] == 10
     assert flow["nodes"]["menu_3"]["max_repeats"] == 0
 
@@ -217,7 +219,7 @@ def test_compile_tree_legacy_and_tree_forms_give_same_graph():
 
 def test_compile_tree_rejects_too_deep():
     level = {"options": [{"digit": "1", "action": "hangup"}]}
-    for _ in range(flow_mod.MAX_DEPTH):  # на 1 рівень глибше за дозволене
+    for _ in range(flow_mod.MAX_DEPTH):  # 1 level deeper than allowed
         level = {"options": [{"digit": "1", "action": "menu", "label": "Глибше",
                               "menu": level}]}
     with pytest.raises(flow_mod.FlowError, match="глибше"):
@@ -240,7 +242,7 @@ def test_compile_tree_rejects_back_on_root():
 
 
 def test_compile_tree_home_jumps_to_root_menu():
-    # «головне меню» з третього рівня — туди, куди back не дістає
+    # "main menu" from the third level — to where back cannot reach
     form = tree_form()
     sub = form["menu"]["options"][2]["menu"]
     sub["options"].append({"digit": "0", "action": "home"})
@@ -278,7 +280,7 @@ def test_compile_tree_rejects_missing_label_for_auto_announce():
     ]}}
     with pytest.raises(flow_mod.FlowError, match="підпису"):
         flow_mod.compile_form("Привіт", "F3", form)
-    # з власним анонсом рівня підпис не потрібен
+    # with the level's own announcement a label is not needed
     form["menu"]["announce_text"] = "Натисніть чотири, щоб почути адресу."
     flow_mod.compile_form("Привіт", "F3", form)
 
@@ -294,7 +296,7 @@ def test_compile_tree_rejects_unknown_action_and_then():
 
 
 def test_compile_tree_rejects_too_many_prompts():
-    # 4 рівні по ~10 операторських опцій → 42 промпти > MAX_PROMPTS
+    # 4 levels of ~10 operator options each → 42 prompts > MAX_PROMPTS
     def level(depth):
         opts = [{"digit": str(d), "action": "operator"} for d in range(10)]
         if depth < flow_mod.MAX_DEPTH:
@@ -361,9 +363,9 @@ def test_validate_bad_menu_key():
 
 
 def test_validate_accepts_old_snapshots():
-    """Снапшоти кампаній, створені до деревного редактора (§5 перших версій,
-    імена вузлів to_op/optout без шляху), мають лишатися валідними —
-    resume/retry старих кампаній працюють без міграції."""
+    """Campaign snapshots created before the tree editor (the flow JSON of
+    early versions, node names to_op/optout without a path) must remain valid —
+    resume/retry of old campaigns works without a migration."""
     flow_mod.validate({
         "start": "msg",
         "nodes": {
@@ -387,5 +389,5 @@ def test_validate_accepts_old_snapshots():
 
 
 def test_cycles_in_graph_are_legal():
-    # "2" -> msg -> menu is a cycle by design (§5); the runtime bounds steps
+    # "2" -> msg -> menu is a cycle by design; the runtime bounds steps
     flow_mod.validate(valid_flow())

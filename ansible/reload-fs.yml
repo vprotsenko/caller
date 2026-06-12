@@ -1,12 +1,12 @@
 ---
-# ШВИДКЕ застосування змін конфігу FreeSWITCH (fs/) БЕЗ рестарту контейнера.
-#   cd caller/ansible && ansible-playbook reload-fs.yml          # м'яко (~5 c)
-#   ansible-playbook reload-fs.yml -e hard=1                      # рестарт FreeSWITCH
+# FAST application of FreeSWITCH config (fs/) changes WITHOUT a container restart.
+#   cd caller/ansible && ansible-playbook reload-fs.yml          # soft (~5 s)
+#   ansible-playbook reload-fs.yml -e hard=1                      # restart FreeSWITCH
 #
-# М'яко: reloadxml + перезапуск sofia-профілю external — застосовує параметри
-# sofia (sip-trace, кодеки), нові gateway'ї та directory. НЕ застосовує зміну
-# набору модулів (modules.conf) — для неї потрібен -e hard=1 (рестарт контейнера,
-# ~15-20 c, перереєстрація транка).
+# Soft: reloadxml + restarting the sofia profile external — applies sofia
+# parameters (sip-trace, codecs), new gateways and the directory. Does NOT apply
+# a change to the module set (modules.conf) — that needs -e hard=1 (container
+# restart, ~15-20 s, trunk re-registration).
 - name: Reload FreeSWITCH config (no container restart)
   hosts: caller
   gather_facts: false
@@ -14,8 +14,8 @@
     app_dir: /opt/caller
     hard: 0
   tasks:
-    # Той самий явний список tracked-файлів, що й у deploy.yml (без тестових
-    # заглушок і згенерованих operator/gateway XML).
+    # The same explicit list of tracked files as in deploy.yml (without test
+    # stubs and generated operator/gateway XML).
     - name: Sync FreeSWITCH base config
       ansible.builtin.copy:
         src: "../fs/{{ item }}"
@@ -44,7 +44,7 @@
         esl_password: "{{ (env_file.content | b64decode) | regex_search('ESL_PASSWORD=(.*)', '\\1') | first }}"
       no_log: true
 
-    # --- м'який шлях (за замовчуванням): reloadxml + перезапуск sofia ----------
+    # --- soft path (default): reloadxml + sofia profile restart ----------------
     - name: reloadxml
       ansible.builtin.command: >
         docker compose exec -T freeswitch
@@ -65,7 +65,7 @@
       when: (hard | int) == 0
       no_log: true
 
-    # --- жорсткий шлях (-e hard=1): рестарт контейнера для зміни modules.conf --
+    # --- hard path (-e hard=1): container restart for modules.conf changes -----
     - name: Restart FreeSWITCH container (hard reload)
       ansible.builtin.command: docker compose restart freeswitch
       args:
@@ -89,4 +89,4 @@
 
     - name: Done
       ansible.builtin.debug:
-        msg: "fs/ застосовано ({{ 'рестарт контейнера' if (hard | int) == 1 else 'reloadxml + sofia restart' }})"
+        msg: "fs/ applied ({{ 'container restart' if (hard | int) == 1 else 'reloadxml + sofia restart' }})"

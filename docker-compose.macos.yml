@@ -1,9 +1,10 @@
-# Оверрайд для локальної розробки на macOS (Docker Desktop, без host network):
+# Override for local development on macOS (Docker Desktop, no host network):
 #   docker compose -f docker-compose.yml -f docker-compose.macos.yml up
-# app ділить network namespace з freeswitch, тож ESL на 127.0.0.1 працює як на
-# Linux; назовні публікується тільки веб-порт 8000 (через сервіс freeswitch,
-# бо порти shared-netns публікує його контейнер). Реальні SIP/RTP-дзвінки тут
-# не працюють (VM без LAN IP) — тільки UI, прев'ю і loopback-E2E (§16).
+# app shares the network namespace with freeswitch, so ESL on 127.0.0.1 works
+# like on Linux; only web port 8000 is published externally (via the freeswitch
+# service, because shared-netns ports are published by its container). Real
+# SIP/RTP calls don't work here (VM with no LAN IP) — only the UI, preview and
+# loopback E2E.
 services:
   freeswitch:
     network_mode: bridge

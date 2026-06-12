@@ -1,4 +1,4 @@
-"""SQLite persistence (Plan.md §4): SIP profiles, operators, campaigns,
+"""SQLite persistence: SIP profiles, operators, campaigns,
 per-number outcomes.
 
 Patterns inherited from v1: one file on a mounted volume (DB_DIR), one shared
@@ -24,17 +24,17 @@ logger = logging.getLogger(__name__)
 DB_DIR = os.environ.get("DB_DIR", "/app/data")
 DB_PATH = os.path.join(DB_DIR, "caller.db")
 
-# campaign.status values (Plan.md §4)
+# campaign.status values
 RUNNING = "running"
 CAMPAIGN_STATUSES = ("running", "done", "interrupted", "stopped")
 
-# campaign_number.status values (Plan.md §4)
+# campaign_number.status values
 NUMBER_STATUSES = (
     "pending", "ringing", "answered", "transferred", "voicemail-left",
     "machine-hangup", "no-answer", "busy", "failed", "optout",
     "missed-operator",
 )
-# eligible for retry-failed; optout is NEVER retried (Plan.md §8)
+# eligible for retry-failed; optout is NEVER retried
 RETRYABLE = ("failed", "busy", "no-answer", "machine-hangup", "missed-operator")
 # still in flight — neither pending nor terminal
 ACTIVE_STATUSES = ("ringing",)
@@ -67,8 +67,8 @@ CREATE TABLE IF NOT EXISTS scenario (
     message_text  TEXT NOT NULL,
     voice         TEXT NOT NULL,
     voice_params  TEXT NOT NULL DEFAULT '{}',  -- JSON {speed, steps, silence}
-    ivr_form      TEXT NOT NULL DEFAULT '{}',  -- JSON РЕКУРСИВНОЇ ФОРМИ (§15), не скомпільований граф:
-                                               -- редактор робить round-trip, компіляція — при старті
+    ivr_form      TEXT NOT NULL DEFAULT '{}',  -- JSON of the RECURSIVE FORM, not the compiled graph:
+                                               -- the editor round-trips it; compilation happens at start
     created_at    REAL NOT NULL,
     updated_at    REAL NOT NULL
 );
@@ -77,10 +77,10 @@ CREATE TABLE IF NOT EXISTS campaign (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     name           TEXT NOT NULL,
     status         TEXT NOT NULL,           -- running|done|interrupted|stopped
-    campaign_type  TEXT NOT NULL DEFAULT 'info',  -- info|operator (AMD branch, §6)
+    campaign_type  TEXT NOT NULL DEFAULT 'info',  -- info|operator (AMD branch)
     message_text   TEXT NOT NULL,
     voice          TEXT NOT NULL,
-    ivr_flow       TEXT NOT NULL,           -- JSON snapshot of the scenario (§5)
+    ivr_flow       TEXT NOT NULL,           -- flow JSON snapshot of the scenario
     profile_id     INTEGER REFERENCES sip_profile(id) ON DELETE SET NULL,
     profile_label  TEXT,                    -- for history display if the profile is gone
     max_concurrent INTEGER NOT NULL DEFAULT 1,
@@ -88,9 +88,9 @@ CREATE TABLE IF NOT EXISTS campaign (
     created_at     REAL NOT NULL,
     started_at     REAL,
     finished_at    REAL,
-    scenario_id    INTEGER,                 -- з якого сценарію стартували (може бути NULL)
-    scenario_name  TEXT,                    -- знімок назви: переживає видалення сценарію
-    ivr_form       TEXT                     -- знімок вихідної форми (§15) для редагування з історії
+    scenario_id    INTEGER,                 -- which scenario it was started from (may be NULL)
+    scenario_name  TEXT,                    -- name snapshot: survives scenario deletion
+    ivr_form       TEXT                     -- snapshot of the source form for editing from history
 );
 
 CREATE TABLE IF NOT EXISTS campaign_number (
@@ -291,7 +291,7 @@ def delete_operator(operator_id):
         conn.commit()
 
 
-# --- Scenarios (збережені варіанти кампаній; джерело для запуску) ---------------
+# --- Scenarios (saved campaign variants; the source for starting) ---------------
 
 def scenario_dict(row):
     return {
@@ -307,8 +307,8 @@ def scenario_dict(row):
 
 
 def list_scenarios():
-    """Full scenario dicts (вони маленькі): список і селект запуску живляться
-    одним запитом, дайджест меню UI рахує сам із `ivr`."""
+    """Full scenario dicts (they are small): the list and the start select are
+    fed by a single query; the UI computes the menu digest itself from `ivr`."""
     with _lock:
         rows = _connect().execute("SELECT * FROM scenario ORDER BY name").fetchall()
     return [scenario_dict(r) for r in rows]

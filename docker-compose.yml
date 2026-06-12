@@ -1,31 +1,31 @@
-# Бойова конфігурація: Linux-хост із публічним IP, host networking для обох
-# сервісів (SIP/RTP мають бачити реальний IP; ESL на 127.0.0.1 спільний).
-# Реальні дзвінки на macOS Docker Desktop НЕ працюють — для локальної розробки
-# є docker-compose.macos.yml:
+# Production configuration: Linux host with a public IP, host networking for
+# both services (SIP/RTP must see the real IP; ESL on 127.0.0.1 is shared).
+# Real calls do NOT work on macOS Docker Desktop — for local development
+# there is docker-compose.macos.yml:
 #   docker compose -f docker-compose.yml -f docker-compose.macos.yml up
 services:
   freeswitch:
-    # Дефолт — готовий образ (працює одразу). Для реального AMD зібрати образ
-    # із mod_amd (див. Dockerfile.freeswitch) і виставити в .env:
+    # Default — a prebuilt image (works out of the box). For real AMD, build an
+    # image with mod_amd (see Dockerfile.freeswitch) and set in .env:
     #   FREESWITCH_IMAGE=caller-freeswitch:amd
-    # Без mod_amd застосунок деградує штатно (відповідь = HUMAN, не скидає).
+    # Without mod_amd the app degrades gracefully (answer = HUMAN, no hangup).
     image: ${FREESWITCH_IMAGE:-safarov/freeswitch:1.10.12}
     platform: linux/amd64
     network_mode: host
     environment:
-      # Пароль ESL обов'язковий: event_socket дає повний контроль над движком
+      # The ESL password is mandatory: event_socket gives full control over the engine
       - ESL_PASSWORD=${ESL_PASSWORD:?set ESL_PASSWORD in .env}
-      # Перший gateway (FlySIP); порожньо = заглушки без реєстрації
+      # First gateway (FlySIP); empty = placeholders without registration
       - SIP_SERVER=${SIP_SERVER:-}
       - SIP_PORT=${SIP_PORT:-5060}
       - SIP_USER=${SIP_USER:-}
       - SIP_PASSWORD=${SIP_PASSWORD:-}
-      # Публічний IP, якщо хост за NAT (порожньо = авто)
+      # Public IP if the host is behind NAT (empty = auto)
       - EXTERNAL_IP=${EXTERNAL_IP:-}
     volumes:
-      # Конфіг — статичні XML у репо (Plan.md §3); креди підставляє vars.xml з env
+      # Config — static XMLs in the repo; vars.xml injects creds from env
       - ./fs:/etc/freeswitch:ro
-      # WAV'и синтезує app; FreeSWITCH тільки читає їх тим самим шляхом
+      # The app synthesizes the WAVs; FreeSWITCH only reads them at the same path
       - ./audio:/app/audio:ro
     restart: "no"
 
@@ -38,9 +38,9 @@ services:
       - ESL_HOST=127.0.0.1
       - ESL_PORT=8021
       - ESL_PASSWORD=${ESL_PASSWORD:?set ESL_PASSWORD in .env}
-      # {gw} = gateway генерований з обраного SIP-профілю (app/gateways.py).
+      # {gw} = gateway generated from the selected SIP profile (app/gateways.py).
       - DIAL_STRING_TEMPLATE=${DIAL_STRING_TEMPLATE:-sofia/gateway/{gw}/{number}}
-      # Caller ID транка (DID): без нього провайдер часто ріже з CALL_REJECTED.
+      # Trunk caller ID (DID): without it the provider often rejects with CALL_REJECTED.
       - CALLER_ID_NUMBER=${CALLER_ID_NUMBER:-}
       - CALLER_ID_NAME=${CALLER_ID_NAME:-}
       - ORIGINATE_EXTRA_VARS=${ORIGINATE_EXTRA_VARS:-}
@@ -49,12 +49,12 @@ services:
       - LANG_CODE=${LANG_CODE:-uk}
       - FS_CONF_DIR=/app/fs
     volumes:
-      # Durable state: SQLite + аудіо-кеш.
-      # data/ містить SIP-паролі плейнтекстом — захищати як .env.
+      # Durable state: SQLite + audio cache.
+      # data/ holds SIP passwords in plaintext — protect it like .env.
       - ./data:/app/data
       - ./audio:/app/audio
-      # Контролер генерує operator-extension'и (directory/default/*.xml)
-      # і на етапі 5 — gateway'ї; FreeSWITCH бачить той самий каталог як ro.
+      # The controller generates operator extensions (directory/default/*.xml)
+      # and, at stage 5, gateways; FreeSWITCH sees the same directory as ro.
       - ./fs:/app/fs
     depends_on:
       - freeswitch

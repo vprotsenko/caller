@@ -1,6 +1,6 @@
-<!-- Домен для операторських extension'ів. Файли default/<ext>.xml генерує
-     контролер (POST /config/operators + reloadxml, Plan.md §15); вони містять
-     SIP-паролі операторів і НЕ комітяться (.gitignore). -->
+<!-- Domain for operator extensions. The default/<ext>.xml files are generated
+     by the controller (POST /config/operators + reloadxml); they
+     contain operators' SIP passwords and are NOT committed (.gitignore). -->
 <include>
   <domain name="$${domain}">
     <params>

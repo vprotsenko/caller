@@ -23,15 +23,16 @@ VOICES = ["F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"]
 DEFAULT_VOICE = "F3"
 DEFAULT_LANG = os.environ.get("LANG_CODE", "uk")
 
-# Генераційні параметри (межі — у clamp): швидкість мовлення, кроки дифузії
-# (більше = якісніше і повільніше синтезується), пауза між реченнями.
+# Generation parameters (bounds live in clamp): speech speed, diffusion steps
+# (more = better quality and slower synthesis), pause between sentences.
 DEFAULT_SPEED = 1.05
 DEFAULT_STEPS = 8
 DEFAULT_SILENCE = 0.3
-# Межі швидкості ВУЖЧІ за модельні (0.7..2.0): нижче 0.7 Supertonic кидає
-# ValueError, а вище ~1.3 МОВЧКИ ковтає слова (заміряно на «Один. Два. Три.
-# Чотири. Пять.»: 1.3 → всі 5 сегментів мовлення, 1.4 → 3, 2.0 → 2 — абонент
-# чує «лише середину повідомлення»). Не розширювати без повторного заміру.
+# The speed bounds are NARROWER than the model's (0.7..2.0): below 0.7
+# Supertonic raises ValueError, and above ~1.3 it SILENTLY swallows words
+# (measured on «Один. Два. Три. Чотири. Пять.»: 1.3 → all 5 speech segments,
+# 1.4 → 3, 2.0 → 2 — the callee hears «only the middle of the message»).
+# Do not widen without re-measuring.
 SPEED_MIN = 0.7
 SPEED_MAX = 1.3
 
@@ -75,10 +76,11 @@ def synthesize_native(text, voice, out_path, lang=DEFAULT_LANG,
     tts = _get_tts()
     with _gen_lock:
         style = tts.get_voice_style(voice_name=voice)
-        # max_chunk_length=10 (мінімум ліб-и) = «одне речення — один чанк»:
-        # silence_duration у Supertonic вставляється ЛИШЕ між чанками, а з
-        # дефолтним лімітом (300 симв.) короткий текст — один чанк, і повзунок
-        # паузи ні на що не впливає. chunk_text речення зсередини не ріже.
+        # max_chunk_length=10 (the library's minimum) = «one sentence — one
+        # chunk»: Supertonic inserts silence_duration ONLY between chunks, and
+        # with the default limit (300 chars) a short text is a single chunk,
+        # so the pause slider has no effect at all. chunk_text never cuts a
+        # sentence from the inside.
         result = tts.synthesize(text, voice_style=style, lang=lang,
                                 speed=speed, total_steps=steps,
                                 silence_duration=silence,
@@ -95,8 +97,8 @@ def synthesize_telephony(text, voice, native_path, tel_path,
     The WAV is guaranteed to be 8000 Hz, mono, 16-bit PCM (verified before
     returning) and starts with `lead_in` seconds of silence. The default suits
     the single-WAV PoC path (&playback right at answer); IVR prompts are
-    rendered with lead_in=0 — the dead air between menu rounds reads as «не
-    працює», so the IVR plays one silence_stream lead-in itself instead.
+    rendered with lead_in=0 — the dead air between menu rounds reads as
+    «it's broken», so the IVR plays one silence_stream lead-in itself instead.
     The full-quality native render is left at native_path. Returns tel_path.
     """
     synthesize_native(text, voice, native_path, **params)

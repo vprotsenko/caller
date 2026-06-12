@@ -1,4 +1,4 @@
-"""Resampler + format verification from the v1-ported tts.py (§16 level 1).
+"""Resampler + format verification from the v1-ported tts.py (verification level 1).
 
 Only the pure audio-path functions — synthesis itself needs the baked model
 and is exercised by /preview at level 2.
@@ -56,8 +56,9 @@ def test_verify_rejects_wrong_rate(tmp_path):
 
 
 def test_clamp_speed_stays_in_model_safe_range():
-    """Нижче 0.7 Supertonic кидає ValueError, вище ~1.3 мовчки ковтає слова
-    («чую лише середину повідомлення») — clamp мусить тримати робочі межі."""
+    """Below 0.7 Supertonic raises ValueError, above ~1.3 it silently swallows
+    words ("I only hear the middle of the message") — clamp must hold the
+    working bounds."""
     assert tts.clamp(0.5, 8, 0.3)[0] == tts.SPEED_MIN
     assert tts.clamp(2.0, 8, 0.3)[0] == tts.SPEED_MAX
     assert tts.clamp(1.05, 8, 0.3) == (1.05, 8, 0.3)

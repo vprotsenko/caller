@@ -1,7 +1,7 @@
-<!-- Профіль для реєстрації операторських софтфонів (MicroSIP/Zoiper) на
-     5060 (етап 3, Plan.md §3). Дзвінки операторам ідуть bridge'ем
-     user/<ext> через sofia_contact з directory. Обрізаний vanilla internal,
-     без TLS (POC-трейдоф). -->
+<!-- Profile for registering operator softphones (MicroSIP/Zoiper) on
+     5060 (stage 3). Calls to operators go via a bridge to
+     user/<ext> through sofia_contact from the directory. Trimmed-down vanilla
+     internal, no TLS (a POC trade-off). -->
 <profile name="internal">
   <settings>
     <param name="debug" value="0"/>
@@ -25,8 +25,8 @@
     <param name="manage-presence" value="false"/>
     <param name="nonce-ttl" value="60"/>
 
-    <!-- реєстрації та дзвінки операторів — тільки з digest-автентифікацією
-         проти directory -->
+    <!-- operator registrations and calls — only with digest authentication
+         against the directory -->
     <param name="auth-calls" value="true"/>
     <param name="challenge-realm" value="auto_from"/>
     <param name="inbound-reg-force-matching-username" value="true"/>

@@ -1,47 +1,48 @@
-# Ansible — деплой і керування Дзвонилкою 2.0
+# Ansible — deploying and operating Dialer 2.0
 
-Хост — **Linux із публічним IP** (вимога SIP/RTP; на macOS реальні дзвінки не
-працюють). Вкажи його в [inventory.ini](inventory.ini).
-`ansible.cfg` тримає один SSH-конект на весь плейбук (ControlMaster) +
-pipelining — менше оверхеду на кожен таск.
+The host is **Linux with a public IP** (a SIP/RTP requirement; real calls do
+not work on macOS). Set it in [inventory.ini](inventory.ini).
+`ansible.cfg` keeps one SSH connection for the whole playbook (ControlMaster)
++ pipelining — less overhead per task.
 
-## Який плейбук коли (швидкість)
+## Which playbook when (speed)
 
-| Що змінив | Плейбук | Час | Що робить |
+| What changed | Playbook | Time | What it does |
 |---|---|---|---|
-| Python-код у `app/` | `redeploy-app.yml` | ~10-30 c | rebuild+restart **лише** app; FreeSWITCH живий |
-| Конфіг `fs/` (sofia, gateway, sip-trace) | `reload-fs.yml` | ~5 c | sync + `reloadxml` + restart sofia-профілю, **без** рестарту контейнера |
-| `fs/modules.conf` (новий модуль) | `reload-fs.yml -e hard=1` | ~15-20 c | рестарт контейнера FreeSWITCH |
-| Все / `requirements.txt` / перший раз | `deploy.yml` | повний | sync усього + build + перестворює лише змінений сервіс |
+| Python code in `app/` | `redeploy-app.yml` | ~10-30 s | rebuild+restart **app only**; FreeSWITCH stays up |
+| `fs/` config (sofia, gateway, sip-trace) | `reload-fs.yml` | ~5 s | sync + `reloadxml` + sofia profile restart, **no** container restart |
+| `fs/modules.conf` (new module) | `reload-fs.yml -e hard=1` | ~15-20 s | FreeSWITCH container restart |
+| Everything / `requirements.txt` / first time | `deploy.yml` | full | sync everything + build + recreates only the changed service |
 
 ```bash
 cd caller/ansible
 
-# Швидко: змінив код контролера
+# Fast: changed controller code
 ansible-playbook redeploy-app.yml
 
-# Швидко: змінив конфіг FreeSWITCH (sip-trace, gateway, кодеки тощо)
+# Fast: changed FreeSWITCH config (sip-trace, gateway, codecs, etc.)
 ansible-playbook reload-fs.yml
-ansible-playbook reload-fs.yml -e hard=1     # якщо мінявся modules.conf
+ansible-playbook reload-fs.yml -e hard=1     # if modules.conf changed
 
-# Повний деплой (перший раз / зміна залежностей)
+# Full deploy (first time / dependency changes)
 ansible-playbook deploy.yml
-#    Для реального AMD: зібрати образ із mod_amd і вказати його:
+#    For real AMD: build the image with mod_amd and point at it:
 ansible-playbook deploy.yml -e freeswitch_image=caller-freeswitch:amd
 
-# 2) Тестова кампанія (creds Basic Auth читаються з /opt/caller/.env)
+# 2) Test campaign (Basic Auth creds are read from /opt/caller/.env)
 ansible-playbook call.yml \
   -e 'message=Добрий день! Це тест.' -e 'numbers=+380671234567' \
   -e campaign_type=operator -e ivr_operator=true
 
-# 3) Стежити до завершення
+# 3) Watch until completion
 ansible-playbook status.yml -e wait=1
 ```
 
-`call.yml` шле JSON-контракт `/start` (Plan.md §15): `numbers` — через кому,
-прапори IVR `ivr_operator|ivr_repeat|ivr_optout`. SIP-профіль — дефолтний у БД
-(сіється з `SIP_*` при першому старті) або `-e profile_id=N`.
+`call.yml` sends the `/start` JSON contract: `numbers` are
+comma-separated, the IVR flags are `ivr_operator|ivr_repeat|ivr_optout`. The
+SIP profile is the default one in the DB (seeded from `SIP_*` on first start)
+or `-e profile_id=N`.
 
-Секрети (`SIP_PASSWORD`, веб-пароль) ідуть із `no_log: true` і не потрапляють
-у вивід Ansible. `.env` оновлюється порядково — значення, додані вручну на
-сервері, переживають редеплой.
+Secrets (`SIP_PASSWORD`, the web password) go through `no_log: true` and never
+appear in Ansible output. `.env` is updated line-by-line — values added by
+hand on the server survive a redeploy.
