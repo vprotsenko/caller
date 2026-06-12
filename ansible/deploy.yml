@@ -155,6 +155,8 @@
         - { key: SIP_USER, value: "{{ sip_user | default('') }}" }
         - { key: SIP_PASSWORD, value: "{{ sip_password | default('') }}" }
         - { key: EXTERNAL_IP, value: "{{ external_ip | default('') }}" }
+        - { key: CALLER_ID_NUMBER, value: "{{ caller_id_number | default('') }}" }
+        - { key: ORIGINATE_EXTRA_VARS, value: "{{ originate_extra_vars | default('') }}" }
       no_log: true
 
     # Recreate only what changed (Plan.md: швидкий редеплой). `up -d --build`
