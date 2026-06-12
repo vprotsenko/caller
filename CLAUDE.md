@@ -102,15 +102,24 @@ external (без них база `safarov` стартує з `-nf` і логів
 - **Одностороння тиша #1 — STUN.** `ext-rtp-ip="auto"` тягне STUN, який на
   хмарі визначив чужий IP (`5.9.9.9`) і поклав у SDP. Дефолт тепер
   `$${local_ip_v4}` (реальний IP інтерфейсу); справжній NAT — `EXTERNAL_IP`.
-- **Одностороння тиша #2 — `a=sendonly` early media + `ignore_early_media`.**
-  FlySIP шле 183 з `a=sendonly` (ringback); FreeSWITCH защёлкує медіа recvonly
-  і не перемикає на sendrecv після 200 OK — ми приймаємо, але не передаємо
-  (tcpdump: 0 вихідних). `ignore_early_media=true` ОБОВ'ЯЗКОВИЙ (інакше
-  `&socket()` стартує на Pre-Answer і грає в ringback), а recvonly лікується
-  **`uuid_media_reneg` (re-INVITE) одразу після відповіді** (`MEDIA_RENEG_ON_ANSWER`,
-  jobs.py) — провайдер перевідповідає реальною медіа-адресою+sendrecv. 2 c
-  lead-in тиші у WAV прикривають реузгодження. `disable-hold=true` на профілі
-  теж лишити.
+- **Одностороння тиша #2 — `a=sendonly` early media (FlySIP) + баг FS 1.10.12.**
+  FlySIP шле другу 183 зі ЗМІНЕНИМ SDP `a=sendonly`; FreeSWITCH защіпає з неї
+  smode=RECVONLY і мовчки викидає весь вихідний RTP (write-гейт у
+  switch_core_media.c:3338), а `a=sendrecv` у фінальному 200 OK smode НЕ
+  скидає — в обробці SDP-відповідей немає гілки для sendrecv. ОДИН re-INVITE
+  не лікує: FS оферить свій поточний recvonly, транк дзеркалить sendonly —
+  односторонність закріплюється ще й контрактно. Лікує **двофазний реінвайт**
+  (`media_reneg_after_answer`, jobs.py): №1 звичайний — відповідь `sendonly`
+  ставить smode=SENDONLY (гейт відкривається) і підтягує реальну
+  медіа-адресу; №2 з одноразовим override `origination_audio_mode=sendrecv` —
+  повертає SDP-контракт у двобічний (smode при цьому не чіпається — той самий
+  баг працює на нас). Пауза між ними `MEDIA_RENEG_PAUSE` (1 с — перша
+  транзакція має завершитись, інакше 491); 2 c lead-in тиші у WAV прикривають
+  обидва. На здорових транках обидва реінвайти — no-op. `ignore_early_media=true`
+  ОБОВ'ЯЗКОВИЙ (інакше `&socket()` стартує на Pre-Answer і грає в ringback).
+  `disable-hold` на цей баг НЕ впливає (гейтить лише hold/MOH-логіку, не
+  smode). Після зміни fs/ конфіг живе тільки після рестарту FS
+  (`reload-fs.yml -e hard=1`) — `rescan` параметри профілю не застосовує.
 - **Перевірка успіху:** `tcpdump -ni any 'udp and host <trunk-media-ip> and
   greater 120'` має показати симетричний потік (наш src:port ↔ їх dst:port,
   однакові порти). Якщо симетрично і реальне PCMA йде, а абонент мовчить — це

@@ -121,10 +121,44 @@ def build_dial_string(number, gateway="flysip", template=None):
 # is fixed at the sofia profile level with disable-hold=true (so a=sendonly is
 # not treated as hold). Keep BOTH. Set IGNORE_EARLY_MEDIA=0 only to debug.
 IGNORE_EARLY_MEDIA = os.environ.get("IGNORE_EARLY_MEDIA", "1") in ("1", "true", "yes")
-# Re-INVITE right after answer so FreeSWITCH adopts the 200 OK media address +
-# sendrecv (fixes one-way audio on trunks with a=sendonly early media). On by
+# Two re-INVITEs right after answer (see media_reneg_after_answer) — undo the
+# one-way media FreeSWITCH latches from a=sendonly early media (FlySIP). On by
 # default; set MEDIA_RENEG_ON_ANSWER=0 to disable.
 MEDIA_RENEG_ON_ANSWER = os.environ.get("MEDIA_RENEG_ON_ANSWER", "1") in ("1", "true", "yes")
+# Pause between the two re-INVITEs: the first SIP transaction must complete
+# (~250 ms on FlySIP) before the second INVITE, or it collides into a 491.
+MEDIA_RENEG_PAUSE = float(os.environ.get("MEDIA_RENEG_PAUSE", "1.0"))
+
+
+async def media_reneg_after_answer(client, call_uuid):
+    """Two re-INVITEs that undo one-way media latched from early media.
+
+    FlySIP sends a changed 183 with `a=sendonly`; FreeSWITCH 1.10.12 latches
+    smode=RECVONLY from it and then silently drops ALL outbound RTP (the write
+    gate in switch_core_media.c), while a `sendrecv` answer never resets smode
+    back (the SDP_ANSWER handling has no sendrecv branch). One re-INVITE cannot
+    fix both the gate and the SDP contract, hence the two-step dance:
+
+    1. plain re-INVITE: FS offers its current direction (recvonly), the trunk
+       mirrors `a=sendonly`, and processing that ANSWER sets smode=SENDONLY —
+       the write gate opens and the real media address is adopted;
+    2. re-INVITE with the one-shot `origination_audio_mode=sendrecv` override:
+       the offer says sendrecv, the trunk answers sendrecv, the session is
+       contractually two-way again; smode stays SENDONLY, so FS keeps sending.
+
+    On healthy trunks both re-INVITEs are no-ops (sendrecv offer/answer). The
+    WAV's LEAD_IN silence covers the renegotiation. Best-effort: a failure
+    here must never kill the call.
+    """
+    try:
+        r1 = await client.api(f"uuid_media_reneg {call_uuid}")
+        await asyncio.sleep(MEDIA_RENEG_PAUSE)
+        await client.api(f"uuid_setvar {call_uuid} origination_audio_mode sendrecv")
+        r2 = await client.api(f"uuid_media_reneg {call_uuid}")
+        logger.info("media reneg %s: #1 %s, #2 %s",
+                    call_uuid, (r1 or "").strip(), (r2 or "").strip())
+    except Exception:  # noqa: BLE001 — never fail the call on this
+        logger.info("media reneg failed for %s", call_uuid, exc_info=True)
 
 
 def _originate_vars(call_uuid):
@@ -402,17 +436,8 @@ async def _dial_number(client, row, flow, files, pool=None, campaign_type="info"
             return
 
         _active["calls"][call_uuid]["state"] = "ivr"
-        # Force a media re-negotiation right after answer: trunks that send
-        # `a=sendonly` early media (FlySIP ringback) make FreeSWITCH latch the
-        # remote media address/direction from the 183, not the 200 OK, so our
-        # audio is never transmitted (one-way silence). A re-INVITE makes the
-        # provider re-answer with its real media address + sendrecv. The WAV's
-        # LEAD_IN silence covers the ~200 ms reneg. Best-effort.
         if MEDIA_RENEG_ON_ANSWER:
-            try:
-                await client.api(f"uuid_media_reneg {call_uuid}")
-            except Exception:  # noqa: BLE001 — never fail the call on this
-                logger.debug("media reneg failed for %s", call_uuid)
+            await media_reneg_after_answer(client, call_uuid)
         budget = ANSWERED_CALL_BUDGET + (BRIDGE_MAX_SECONDS if pool else 0)
         try:
             outcome = await asyncio.wait_for(ctx.done, budget)

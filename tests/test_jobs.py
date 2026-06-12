@@ -195,6 +195,28 @@ async def test_call_once_no_answer(tmp_path):
     assert result["status"] == "no-answer"
 
 
+async def test_media_reneg_after_answer_two_phase(monkeypatch):
+    """Reneg #1 is plain (opens the FS write gate via the trunk's sendonly
+    answer); reneg #2 offers sendrecv via the one-shot origination_audio_mode
+    override (restores the two-way SDP contract). Order matters."""
+    monkeypatch.setattr(jobs, "MEDIA_RENEG_PAUSE", 0)
+    client = StubClient("+OK")
+    await jobs.media_reneg_after_answer(client, "uuid-1")
+    assert client.killed == [
+        "uuid_media_reneg uuid-1",
+        "uuid_setvar uuid-1 origination_audio_mode sendrecv",
+        "uuid_media_reneg uuid-1",
+    ]
+
+
+async def test_media_reneg_after_answer_swallows_errors():
+    class BrokenClient:
+        async def api(self, cmd, timeout=None):
+            raise RuntimeError("ESL down")
+
+    await jobs.media_reneg_after_answer(BrokenClient(), "uuid-1")  # must not raise
+
+
 def make_silence_wav(path, seconds=0.1, rate=8000):
     import wave
     with wave.open(str(path), "wb") as w:
