@@ -206,10 +206,14 @@ def outcome_status(outcome):
     return "answered"
 
 
-def prompt_path(text, voice):
-    # "|lead0" відрізняє промпти без вшитого lead-in від старого кешу з ним
+def prompt_path(text, voice, speed=tts.DEFAULT_SPEED, steps=tts.DEFAULT_STEPS,
+                silence=tts.DEFAULT_SILENCE):
+    # "|lead0" відрізняє промпти без вшитого lead-in від старого кешу з ним;
+    # генераційні параметри — частина ключа, інакше зміна швидкості віддасть
+    # старий WAV із кешу
     digest = hashlib.sha1(
-        f"{text}|{voice}|{tts.DEFAULT_LANG}|lead0".encode()).hexdigest()[:16]
+        f"{text}|{voice}|{tts.DEFAULT_LANG}|lead0|{speed}|{steps}|{silence}"
+        .encode()).hexdigest()[:16]
     return os.path.join(AUDIO_DIR, f"prompt_{digest}.wav")
 
 
@@ -223,11 +227,15 @@ def prerender_prompts(flow):
     files = {}
     for name, prompt in flow["prompts"].items():
         text = normalize_text(prompt["text"])
-        path = prompt_path(text, prompt["voice"])
+        speed = float(prompt.get("speed", tts.DEFAULT_SPEED))
+        steps = int(prompt.get("steps", tts.DEFAULT_STEPS))
+        silence = float(prompt.get("silence", tts.DEFAULT_SILENCE))
+        path = prompt_path(text, prompt["voice"], speed, steps, silence)
         if not os.path.isfile(path):
             native = path + ".native.wav"
             tts.synthesize_telephony(text, prompt["voice"], native, path,
-                                     lead_in=0.0)
+                                     lead_in=0.0, speed=speed, steps=steps,
+                                     silence=silence)
             try:
                 os.remove(native)
             except OSError:

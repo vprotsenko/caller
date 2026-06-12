@@ -39,10 +39,24 @@ document.querySelectorAll("nav.tabs button").forEach(btn => {
 });
 
 // ---------- preview ----------
+// повзунки параметрів голосу: живе значення поруч із підписом
+[["voiceSpeed", "voiceSpeedVal"], ["voicePause", "voicePauseVal"],
+ ["voiceSteps", "voiceStepsVal"]].forEach(([slider, label]) => {
+  $(slider).oninput = () => $(label).textContent = $(slider).value;
+});
+function voiceParams() {
+  return {
+    speed: parseFloat($("voiceSpeed").value) || 1.05,
+    steps: parseInt($("voiceSteps").value, 10) || 8,
+    silence: parseFloat($("voicePause").value) >= 0 ? parseFloat($("voicePause").value) : 0.3,
+  };
+}
 async function previewText(text, hintEl, btn) {
   if (!text.trim()) { banner($("campBanner"), "Порожній текст", "err"); return; }
   if (btn) btn.disabled = true; if (hintEl) hintEl.textContent = "синтез…";
   const fd = new FormData(); fd.append("text", text); fd.append("voice", $("voice").value);
+  const vp = voiceParams();
+  fd.append("speed", vp.speed); fd.append("steps", vp.steps); fd.append("silence", vp.silence);
   const { ok, data } = await api("POST", "/preview", fd, true);
   if (btn) btn.disabled = false;
   if (!ok) { if (hintEl) hintEl.textContent = data.error || "помилка"; return; }
@@ -94,6 +108,7 @@ $("startBtn").onclick = async () => {
   const numbers = $("numbers").value.split("\n").map(s => s.trim()).filter(Boolean);
   const payload = {
     name: $("name").value, message: $("text").value, voice: $("voice").value,
+    voice_params: voiceParams(),
     numbers, profile_id: parseInt($("profileSel").value, 10) || null,
     campaign_type: $("campaignType").value,
     max_concurrent: parseInt($("maxConc").value || "1", 10),

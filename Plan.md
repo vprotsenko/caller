@@ -311,6 +311,7 @@ git show main:ansible/deploy.yml        # деплой-патерн: .env чер
   "name": "Акція червня",
   "message": "Добрий день! ...",
   "voice": "F3",
+  "voice_params": {"speed": 1.05, "steps": 8, "silence": 0.3},
   "numbers": ["+380671234567", "+380501112233"],
   "profile_id": 1,
   "campaign_type": "operator",
@@ -328,6 +329,15 @@ git show main:ansible/deploy.yml        # деплой-патерн: .env чер
 
 `menu_text` — необовʼязковий анонс меню; порожній → сервер генерує текст з
 увімкнених опцій (`flow.menu_announcement`).
+
+`voice_params` — необовʼязкові параметри синтезу, clamp-яться сервером
+(`tts.clamp`): `speed` 0.7–1.3 (дефолт 1.05; модель формально приймає до 2.0,
+але вище ~1.3 мовчки ковтає слова, нижче 0.7 — кидає ValueError), `steps`
+1–32 (кроки дифузії,
+дефолт 8), `silence` 0.0–2.0 с (пауза між реченнями, дефолт 0.3). Компілятор
+кладе їх у кожен `prompt` снапшота (`{"text", "voice", "speed", "steps",
+"silence"}`), тож resume/retry синтезують ідентично; вони ж — частина ключа
+WAV-кешу (`jobs.prompt_path`).
 
 Відповіді: `200 {"campaign_id": 7}`; `409 {"detail": "campaign already
 running"}`; `400` з описом помилки валідації (номери, IVR-форма, синтез).

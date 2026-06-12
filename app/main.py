@@ -111,18 +111,24 @@ def static_file(name: str):
 def preview(
     text: str = Form(...),
     voice: str = Form(tts.DEFAULT_VOICE),
-    speed: float = Form(1.05),
-    steps: int = Form(8),
+    speed: float = Form(tts.DEFAULT_SPEED),
+    steps: int = Form(tts.DEFAULT_STEPS),
+    silence: float = Form(tts.DEFAULT_SILENCE),
 ):
     text = jobs.normalize_text(text).strip()
     if not text:
         return JSONResponse({"error": "Порожній текст"}, status_code=400)
     if voice not in tts.VOICES:
         return JSONResponse({"error": f"Невідомий голос {voice}"}, status_code=400)
-    speed, steps, silence = tts.clamp(speed, steps, 0.3)
+    speed, steps, silence = tts.clamp(speed, steps, silence)
 
     out = os.path.join(AUDIO_DIR, f"preview_{voice}.wav")
-    tts.synthesize_native(text, voice, out, speed=speed, steps=steps, silence=silence)
+    try:
+        tts.synthesize_native(text, voice, out, speed=speed, steps=steps,
+                              silence=silence)
+    except Exception:  # noqa: BLE001 — модель може відкинути параметри/текст
+        logger.exception("preview synthesis failed")
+        return JSONResponse({"error": "Помилка синтезу"}, status_code=500)
     return {"voice": voice, "url": f"/audio/preview_{voice}.wav", "secs": tts.wav_seconds(out)}
 
 
@@ -167,8 +173,19 @@ async def start(payload: dict = Body(...)):
     if profile is None:
         return JSONResponse({"error": "SIP-профіль не знайдено"}, status_code=400)
 
+    vp = payload.get("voice_params") or {}
     try:
-        compiled = flow_mod.compile_form(message, voice, payload.get("ivr"))
+        speed, steps, silence = tts.clamp(
+            vp.get("speed", tts.DEFAULT_SPEED),
+            vp.get("steps", tts.DEFAULT_STEPS),
+            vp.get("silence", tts.DEFAULT_SILENCE))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "Некоректні параметри голосу"}, status_code=400)
+
+    try:
+        compiled = flow_mod.compile_form(
+            message, voice, payload.get("ivr"),
+            voice_params={"speed": speed, "steps": steps, "silence": silence})
     except flow_mod.FlowError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except (TypeError, ValueError):

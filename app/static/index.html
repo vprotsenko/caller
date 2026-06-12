@@ -83,6 +83,19 @@
           <option>M1</option><option>M2</option><option>M3</option><option>M4</option><option>M5</option>
         </select>
       </div>
+      <div>
+        <label class="fld" for="voiceSpeed">Швидкість: <b id="voiceSpeedVal">1.05</b></label>
+        <!-- межі = tts.SPEED_MIN/MAX: нижче 0.7 модель падає, вище 1.3 ковтає слова -->
+        <input id="voiceSpeed" type="range" min="0.7" max="1.3" step="0.05" value="1.05" style="width:100%">
+      </div>
+      <div>
+        <label class="fld" for="voicePause">Пауза між реченнями: <b id="voicePauseVal">0.3</b> c</label>
+        <input id="voicePause" type="range" min="0" max="2" step="0.1" value="0.3" style="width:100%">
+      </div>
+      <div>
+        <label class="fld" for="voiceSteps">Якість синтезу: <b id="voiceStepsVal">8</b></label>
+        <input id="voiceSteps" type="range" min="1" max="32" step="1" value="8" style="width:100%">
+      </div>
       <div style="flex:2">
         <label class="fld">&nbsp;</label>
         <button class="small" id="previewBtn" type="button">▶ Прослухати</button>

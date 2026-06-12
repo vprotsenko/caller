@@ -39,11 +39,13 @@ class FlowError(ValueError):
     """Invalid IVR form input or scenario JSON; .args[0] is user-readable."""
 
 
-def compile_form(message_text, voice, ivr=None):
+def compile_form(message_text, voice, ivr=None, voice_params=None):
     """Compile the §15 `ivr` form object into the §5 flow JSON.
 
     With no form (or everything disabled) the flow degenerates to
-    play-message -> hangup — the v1 behaviour.
+    play-message -> hangup — the v1 behaviour. `voice_params` (вже clamped
+    upstream: speed/steps/silence) лягають у КОЖЕН промпт — снапшот flow
+    самодостатній, resume/retry синтезують так само.
     """
     ivr = ivr or {}
     operator = ivr.get("operator") or {}
@@ -52,7 +54,13 @@ def compile_form(message_text, voice, ivr=None):
     has_menu = bool(operator.get("enabled") or repeat.get("enabled")
                     or optout.get("enabled"))
 
-    prompts = {"main": {"text": message_text, "voice": voice}}
+    def prompt(text):
+        p = {"text": text, "voice": voice}
+        if voice_params:
+            p.update(voice_params)
+        return p
+
+    prompts = {"main": prompt(message_text)}
     nodes = {"bye": {"type": "hangup"}}
 
     if not has_menu:
@@ -70,21 +78,21 @@ def compile_form(message_text, voice, ivr=None):
     branches = {}
     if operator.get("enabled"):
         text = (operator.get("connect_text") or "").strip() or DEFAULT_CONNECT_TEXT
-        prompts["connecting"] = {"text": text, "voice": voice}
+        prompts["connecting"] = prompt(text)
         nodes["to_op"] = {"type": "bridge", "prompt": "connecting"}
         branches["1"] = "to_op"
     if repeat.get("enabled"):
         branches["2"] = "msg"
     if optout.get("enabled"):
         text = (optout.get("confirm_text") or "").strip() or DEFAULT_OPTOUT_TEXT
-        prompts["optout_ok"] = {"text": text, "voice": voice}
+        prompts["optout_ok"] = prompt(text)
         nodes["optout"] = {"type": "play", "prompt": "optout_ok",
                            "mark": "optout", "next": "bye"}
         branches["0"] = "optout"
 
     menu_text = (ivr.get("menu_text") or "").strip() or menu_announcement(
         operator.get("enabled"), repeat.get("enabled"), optout.get("enabled"))
-    prompts["menu"] = {"text": menu_text, "voice": voice}
+    prompts["menu"] = prompt(menu_text)
     nodes["msg"] = {"type": "play", "prompt": "main", "next": "menu"}
     nodes["menu"] = {
         "type": "menu",

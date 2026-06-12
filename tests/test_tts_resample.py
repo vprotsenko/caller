@@ -53,3 +53,12 @@ def test_verify_rejects_wrong_rate(tmp_path):
     bad = make_sine_wav(tmp_path / "bad.wav", rate=16000)
     with pytest.raises(ValueError):
         tts._verify(bad)
+
+
+def test_clamp_speed_stays_in_model_safe_range():
+    """Нижче 0.7 Supertonic кидає ValueError, вище ~1.3 мовчки ковтає слова
+    («чую лише середину повідомлення») — clamp мусить тримати робочі межі."""
+    assert tts.clamp(0.5, 8, 0.3)[0] == tts.SPEED_MIN
+    assert tts.clamp(2.0, 8, 0.3)[0] == tts.SPEED_MAX
+    assert tts.clamp(1.05, 8, 0.3) == (1.05, 8, 0.3)
+    assert tts.clamp(1.0, 999, -1)[1:] == (32, 0.0)

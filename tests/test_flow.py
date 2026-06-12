@@ -61,6 +61,22 @@ def test_compile_menu_text_override():
     assert flow["prompts"]["menu"]["text"] == "Натисніть один або два."
 
 
+def test_compile_voice_params_reach_every_prompt():
+    """Снапшот flow самодостатній: resume/retry мають синтезувати з тими
+    самими параметрами, тож вони лягають у кожен промпт."""
+    vp = {"speed": 1.3, "steps": 16, "silence": 0.5}
+    flow = flow_mod.compile_form("Привіт", "F3", FULL_FORM, voice_params=vp)
+    for prompt in flow["prompts"].values():
+        assert prompt["speed"] == 1.3
+        assert prompt["steps"] == 16
+        assert prompt["silence"] == 0.5
+
+
+def test_compile_without_voice_params_keeps_plain_prompts():
+    flow = flow_mod.compile_form("Привіт", "F3", FULL_FORM)
+    assert "speed" not in flow["prompts"]["main"]
+
+
 def test_compile_default_prompt_texts():
     flow = flow_mod.compile_form("Привіт", "F3", {
         "operator": {"enabled": True, "connect_text": "  "},

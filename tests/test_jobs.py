@@ -120,6 +120,11 @@ def test_prompt_path_is_cache_key(tmp_path, monkeypatch):
     assert a == jobs.prompt_path("Привіт", "F3")      # stable
     assert a != jobs.prompt_path("Привіт!", "F3")     # text changes the key
     assert a != jobs.prompt_path("Привіт", "M1")      # voice changes the key
+    # генераційні параметри — теж частина ключа, інакше зміна швидкості
+    # віддасть старий WAV із кешу
+    assert a != jobs.prompt_path("Привіт", "F3", speed=1.5)
+    assert a != jobs.prompt_path("Привіт", "F3", steps=16)
+    assert a != jobs.prompt_path("Привіт", "F3", silence=1.0)
 
 
 # --- hangup cause -> status (Plan.md §6) -----------------------------------------

@@ -23,6 +23,18 @@ VOICES = ["F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"]
 DEFAULT_VOICE = "F3"
 DEFAULT_LANG = os.environ.get("LANG_CODE", "uk")
 
+# Генераційні параметри (межі — у clamp): швидкість мовлення, кроки дифузії
+# (більше = якісніше і повільніше синтезується), пауза між реченнями.
+DEFAULT_SPEED = 1.05
+DEFAULT_STEPS = 8
+DEFAULT_SILENCE = 0.3
+# Межі швидкості ВУЖЧІ за модельні (0.7..2.0): нижче 0.7 Supertonic кидає
+# ValueError, а вище ~1.3 МОВЧКИ ковтає слова (заміряно на «Один. Два. Три.
+# Чотири. Пять.»: 1.3 → всі 5 сегментів мовлення, 1.4 → 3, 2.0 → 2 — абонент
+# чує «лише середину повідомлення»). Не розширювати без повторного заміру.
+SPEED_MIN = 0.7
+SPEED_MAX = 1.3
+
 TARGET_RATE = 8000
 TARGET_CHANNELS = 1
 TARGET_WIDTH = 2  # bytes per sample -> 16-bit (PJSIP requires 16-bit PCM mono)
@@ -50,21 +62,27 @@ def _get_tts():
 def clamp(speed, steps, silence):
     """Clamp generation params to safe ranges so bad input can't wedge the model."""
     return (
-        min(max(float(speed), 0.5), 2.0),
+        min(max(float(speed), SPEED_MIN), SPEED_MAX),
         min(max(int(steps), 1), 32),
         min(max(float(silence), 0.0), 2.0),
     )
 
 
 def synthesize_native(text, voice, out_path, lang=DEFAULT_LANG,
-                      speed=1.05, steps=8, silence=0.3):
+                      speed=DEFAULT_SPEED, steps=DEFAULT_STEPS,
+                      silence=DEFAULT_SILENCE):
     """Render `text` to a native-rate (44.1 kHz) WAV at out_path. Returns out_path."""
     tts = _get_tts()
     with _gen_lock:
         style = tts.get_voice_style(voice_name=voice)
+        # max_chunk_length=10 (мінімум ліб-и) = «одне речення — один чанк»:
+        # silence_duration у Supertonic вставляється ЛИШЕ між чанками, а з
+        # дефолтним лімітом (300 симв.) короткий текст — один чанк, і повзунок
+        # паузи ні на що не впливає. chunk_text речення зсередини не ріже.
         result = tts.synthesize(text, voice_style=style, lang=lang,
                                 speed=speed, total_steps=steps,
-                                silence_duration=silence)
+                                silence_duration=silence,
+                                max_chunk_length=10)
         wav = result[0] if isinstance(result, (tuple, list)) else result
         tts.save_audio(wav, out_path)
     return out_path
