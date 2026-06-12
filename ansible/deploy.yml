@@ -95,6 +95,7 @@
         dest: "{{ app_dir }}/app/"
         mode: "0644"
         directory_mode: "0755"
+      register: app_copy
 
     # Copy ONLY the tracked base config (explicit list) — NOT the whole fs/
     # tree: the dev working copy holds gitignored test stubs (test_*.xml) and
@@ -116,6 +117,7 @@
         - sip_profiles/external/flysip.xml
         - dialplan/default.xml
         - directory/default.xml
+      register: fs_copy
 
     - name: Copy tests (so `docker compose run app pytest` works on the host)
       ansible.builtin.copy:
@@ -155,13 +157,23 @@
         - { key: EXTERNAL_IP, value: "{{ external_ip | default('') }}" }
       no_log: true
 
-    # --force-recreate so fs/ config changes (new modules, sip-trace, gateways)
-    # are picked up — FreeSWITCH loads modules only at (re)start, not reloadxml.
-    - name: Build and (re)start the stack (FreeSWITCH pull + app build)
-      ansible.builtin.command: docker compose up -d --build --force-recreate
+    # Recreate only what changed (Plan.md: швидкий редеплой). `up -d --build`
+    # перезбирає app і перестворює його контейнер, лише якщо змінився код/образ;
+    # FreeSWITCH (фіксований тег + bind-mount конфіг) compose сам НЕ чіпає.
+    - name: Build and (re)start the stack
+      ansible.builtin.command: docker compose up -d --build
       args:
         chdir: "{{ app_dir }}"
       changed_when: true
+
+    # fs/ — bind-mount, тож compose не помічає змін; коли конфіг оновився,
+    # перестворюємо ЛИШЕ FreeSWITCH (модулі вантажаться тільки при рестарті).
+    - name: Recreate FreeSWITCH only if its config changed
+      ansible.builtin.command: docker compose up -d --force-recreate --no-deps freeswitch
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
+      when: fs_copy.changed
 
     - name: Wait until the site answers on :8000 (authenticated)
       ansible.builtin.uri:
@@ -171,8 +183,8 @@
         force_basic_auth: true
         status_code: 200
       register: health
-      retries: 60
-      delay: 5
+      retries: 40
+      delay: 3
       until: health.status is defined and health.status == 200
       no_log: true
 

@@ -1,0 +1,62 @@
+---
+# ШВИДКИЙ редеплой ЛИШЕ контролера (app) — для змін у Python-коді.
+# Не чіпає FreeSWITCH (sofia/gateway/реєстрації лишаються живими). ~10-30 c.
+#   cd caller/ansible && ansible-playbook redeploy-app.yml
+# Якщо мінявся requirements.txt — теж спрацює (--build перезбере залежності).
+# Зміни конфігу FreeSWITCH (fs/) цей плейбук НЕ застосовує — для них reload-fs.yml.
+- name: Fast redeploy (app only)
+  hosts: caller
+  gather_facts: false
+  vars:
+    app_dir: /opt/caller
+  tasks:
+    - name: Sync the app package
+      ansible.builtin.copy:
+        src: "../app/"
+        dest: "{{ app_dir }}/app/"
+        mode: "0644"
+        directory_mode: "0755"
+      register: app_sync
+
+    - name: Sync requirements (rebuild deps only if it changed)
+      ansible.builtin.copy:
+        src: "../requirements.txt"
+        dest: "{{ app_dir }}/requirements.txt"
+        mode: "0644"
+      register: reqs_sync
+
+    - name: Rebuild + recreate ONLY app (FreeSWITCH untouched, --no-deps)
+      ansible.builtin.command: docker compose up -d --build --no-deps app
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
+      when: app_sync.changed or reqs_sync.changed
+
+    - name: Read web credentials from .env
+      ansible.builtin.slurp:
+        src: "{{ app_dir }}/.env"
+      register: env_file
+      no_log: true
+
+    - name: Parse web credentials
+      ansible.builtin.set_fact:
+        web_user: "{{ (env_file.content | b64decode) | regex_search('WEB_USER=(.*)', '\\1') | first }}"
+        web_password: "{{ (env_file.content | b64decode) | regex_search('WEB_PASSWORD=(.*)', '\\1') | first }}"
+      no_log: true
+
+    - name: Wait until the app answers on :8000
+      ansible.builtin.uri:
+        url: http://localhost:8000/status
+        url_username: "{{ web_user }}"
+        url_password: "{{ web_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: health
+      retries: 20
+      delay: 2
+      until: health.status is defined and health.status == 200
+      no_log: true
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "app оновлено; FreeSWITCH ESL: {{ health.json.esl_connected | default('?') }}"

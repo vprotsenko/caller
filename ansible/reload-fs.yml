@@ -1,0 +1,92 @@
+---
+# ШВИДКЕ застосування змін конфігу FreeSWITCH (fs/) БЕЗ рестарту контейнера.
+#   cd caller/ansible && ansible-playbook reload-fs.yml          # м'яко (~5 c)
+#   ansible-playbook reload-fs.yml -e hard=1                      # рестарт FreeSWITCH
+#
+# М'яко: reloadxml + перезапуск sofia-профілю external — застосовує параметри
+# sofia (sip-trace, кодеки), нові gateway'ї та directory. НЕ застосовує зміну
+# набору модулів (modules.conf) — для неї потрібен -e hard=1 (рестарт контейнера,
+# ~15-20 c, перереєстрація транка).
+- name: Reload FreeSWITCH config (no container restart)
+  hosts: caller
+  gather_facts: false
+  vars:
+    app_dir: /opt/caller
+    hard: 0
+  tasks:
+    # Той самий явний список tracked-файлів, що й у deploy.yml (без тестових
+    # заглушок і згенерованих operator/gateway XML).
+    - name: Sync FreeSWITCH base config
+      ansible.builtin.copy:
+        src: "../fs/{{ item }}"
+        dest: "{{ app_dir }}/fs/{{ item }}"
+        mode: "0644"
+        directory_mode: "0755"
+      loop:
+        - freeswitch.xml
+        - vars.xml
+        - autoload_configs/
+        - sip_profiles/external.xml
+        - sip_profiles/internal.xml
+        - sip_profiles/external/flysip.xml
+        - dialplan/default.xml
+        - directory/default.xml
+      register: fs_sync
+
+    - name: Read ESL password from .env
+      ansible.builtin.slurp:
+        src: "{{ app_dir }}/.env"
+      register: env_file
+      no_log: true
+
+    - name: Parse ESL password
+      ansible.builtin.set_fact:
+        esl_password: "{{ (env_file.content | b64decode) | regex_search('ESL_PASSWORD=(.*)', '\\1') | first }}"
+      no_log: true
+
+    # --- м'який шлях (за замовчуванням): reloadxml + перезапуск sofia ----------
+    - name: reloadxml
+      ansible.builtin.command: >
+        docker compose exec -T freeswitch
+        fs_cli -p {{ esl_password }} -x "reloadxml"
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
+      when: (hard | int) == 0
+      no_log: true
+
+    - name: Restart sofia external profile (applies sofia params + gateways)
+      ansible.builtin.command: >
+        docker compose exec -T freeswitch
+        fs_cli -p {{ esl_password }} -x "sofia profile external restart reloadxml"
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
+      when: (hard | int) == 0
+      no_log: true
+
+    # --- жорсткий шлях (-e hard=1): рестарт контейнера для зміни modules.conf --
+    - name: Restart FreeSWITCH container (hard reload)
+      ansible.builtin.command: docker compose restart freeswitch
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
+      when: (hard | int) == 1
+
+    - name: Wait for sofia external to come back (hard reload)
+      ansible.builtin.command: >
+        docker compose exec -T freeswitch
+        fs_cli -p {{ esl_password }} -x "sofia status"
+      args:
+        chdir: "{{ app_dir }}"
+      register: sofia
+      retries: 15
+      delay: 2
+      until: sofia.rc == 0 and 'external' in sofia.stdout
+      changed_when: false
+      when: (hard | int) == 1
+      no_log: true
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "fs/ застосовано ({{ 'рестарт контейнера' if (hard | int) == 1 else 'reloadxml + sofia restart' }})"
