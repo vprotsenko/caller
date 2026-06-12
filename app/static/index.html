@@ -64,18 +64,87 @@
 
 <nav class="tabs">
   <button data-tab="campaign" class="active">Кампанія</button>
+  <button data-tab="scenarios">Сценарії</button>
   <button data-tab="settings">Налаштування</button>
   <button data-tab="history">Історія</button>
 </nav>
 
-<!-- ============================ КАМПАНІЯ ============================ -->
+<!-- ============================ КАМПАНІЯ (запуск) ============================ -->
 <section class="tab active" id="tab-campaign">
   <div class="banner" id="campBanner"></div>
 
   <fieldset>
-    <legend>Повідомлення</legend>
-    <label class="fld" for="name">Назва кампанії</label>
-    <input id="name" placeholder="Акція червня" style="width:100%">
+    <legend>Сценарій</legend>
+    <div class="row">
+      <div style="flex:3">
+        <label class="fld" for="scnSel">Збережений сценарій</label>
+        <select id="scnSel" style="width:100%"></select>
+      </div>
+      <div style="max-width:190px">
+        <label class="fld">&nbsp;</label>
+        <button class="small" id="scnListenBtn" type="button" title="Прослухати повідомлення">▶</button>
+        <button class="small" id="scnEditBtn" type="button">✎ редагувати</button>
+      </div>
+    </div>
+    <div id="scnDigest" class="muted" style="margin-top:8px"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Набір</legend>
+    <label class="fld" for="name">Назва кампанії <span class="hint">(порожньо = назва сценарію)</span></label>
+    <input id="name" style="width:100%">
+    <div class="row">
+      <div>
+        <label class="fld" for="profileSel">SIP-профіль (транк)</label>
+        <select id="profileSel" style="width:100%"></select>
+      </div>
+      <div style="max-width:170px">
+        <label class="fld" for="maxConc">Одночасних дзвінків</label>
+        <input id="maxConc" type="number" min="1" max="5" value="1" style="width:100%">
+      </div>
+    </div>
+    <label class="fld" for="numbers">Номери (по одному на рядок)</label>
+    <textarea id="numbers" rows="5" placeholder="+380671234567&#10;+380501112233"></textarea>
+    <button class="primary" id="startBtn" type="button" style="margin-top:10px">Запустити кампанію</button>
+  </fieldset>
+
+  <fieldset id="liveBox" style="display:none">
+    <legend>Прогрес</legend>
+    <div id="liveName" style="font-weight:600"></div>
+    <div class="counts" id="liveCounts"></div>
+    <div class="muted" id="liveCurrent"></div>
+    <div class="log" id="liveLog"></div>
+  </fieldset>
+</section>
+
+<!-- ============================ СЦЕНАРІЇ (бібліотека + редактор) ============================ -->
+<section class="tab" id="tab-scenarios">
+  <div class="banner" id="scnBanner"></div>
+
+  <fieldset>
+    <legend>Збережені сценарії</legend>
+    <table id="scnTbl"><thead>
+      <tr><th>Назва</th><th>Тип</th><th>Голос</th><th>Меню</th><th></th></tr>
+    </thead><tbody></tbody></table>
+    <p class="hint" id="scnEmptyHint" style="display:none">Поки порожньо — заповніть редактор нижче і натисніть «Зберегти».</p>
+  </fieldset>
+
+  <fieldset>
+    <legend id="scnFormLegend">Новий сценарій</legend>
+    <input type="hidden" id="scnId">
+    <div class="row">
+      <div style="flex:2">
+        <label class="fld" for="scnName">Назва сценарію</label>
+        <input id="scnName" placeholder="Акція червня" style="width:100%">
+      </div>
+      <div>
+        <label class="fld" for="campaignType">Тип кампанії</label>
+        <select id="campaignType" style="width:100%">
+          <option value="info">Інформаційна (автовідповідач → лишити повідомлення)</option>
+          <option value="operator">З оператором (автовідповідач → покласти слухавку)</option>
+        </select>
+      </div>
+    </div>
     <label class="fld" for="text">Текст повідомлення</label>
     <textarea id="text" rows="3">Добрий день! Це повідомлення від компанії.</textarea>
     <div class="row">
@@ -132,37 +201,9 @@
     </div>
   </fieldset>
 
-  <fieldset>
-    <legend>Набір</legend>
-    <div class="row">
-      <div>
-        <label class="fld" for="profileSel">SIP-профіль (транк)</label>
-        <select id="profileSel" style="width:100%"></select>
-      </div>
-      <div>
-        <label class="fld" for="campaignType">Тип кампанії</label>
-        <select id="campaignType" style="width:100%">
-          <option value="info">Інформаційна (автовідповідач → лишити повідомлення)</option>
-          <option value="operator">З оператором (автовідповідач → покласти слухавку)</option>
-        </select>
-      </div>
-      <div>
-        <label class="fld" for="maxConc">Одночасних дзвінків</label>
-        <input id="maxConc" type="number" min="1" max="5" value="1" style="width:100%">
-      </div>
-    </div>
-    <label class="fld" for="numbers">Номери (по одному на рядок)</label>
-    <textarea id="numbers" rows="5" placeholder="+380671234567&#10;+380501112233"></textarea>
-    <button class="primary" id="startBtn" type="button" style="margin-top:10px">Запустити кампанію</button>
-  </fieldset>
-
-  <fieldset id="liveBox" style="display:none">
-    <legend>Прогрес</legend>
-    <div id="liveName" style="font-weight:600"></div>
-    <div class="counts" id="liveCounts"></div>
-    <div class="muted" id="liveCurrent"></div>
-    <div class="log" id="liveLog"></div>
-  </fieldset>
+  <button class="primary" id="scnSave" type="button">Зберегти</button>
+  <button id="scnSaveNew" type="button">Зберегти як новий</button>
+  <button id="scnReset" type="button">Очистити форму</button>
 </section>
 
 <!-- ============================ НАЛАШТУВАННЯ ============================ -->
@@ -217,6 +258,6 @@
 </section>
 
 <!-- ?v= ламає вже закешовані копії app.js (нові відповіді йдуть з no-cache) -->
-<script src="/static/app.js?v=ivr-tree-1"></script>
+<script src="/static/app.js?v=scenarios-1"></script>
 </body>
 </html>

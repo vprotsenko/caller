@@ -139,21 +139,108 @@ def preview(
     return {"voice": voice, "url": f"/audio/preview_{voice}.wav", "secs": tts.wav_seconds(out)}
 
 
-# --- Campaign (§15) ---------------------------------------------------------------
+# --- Scenario content (спільне для /scenarios і /start, §15) -----------------------
 
-@app.post("/start")
-async def start(payload: dict = Body(...)):
-    name = (payload.get("name") or "").strip() or "Кампанія"
+def _parse_scenario_content(payload):
+    """Validate message/voice/type/voice_params/ivr; compile the IVR form as a
+    dry-run so a scenario with errors cannot be saved or started.
+    Returns (fields, err): fields carries the clamped values + compiled flow."""
     message = (payload.get("message") or "").strip()
     voice = payload.get("voice") or tts.DEFAULT_VOICE
     campaign_type = payload.get("campaign_type") or "info"
     if not message:
-        return JSONResponse({"error": "Порожній текст повідомлення"}, status_code=400)
+        return None, "Порожній текст повідомлення"
     if voice not in tts.VOICES:
-        return JSONResponse({"error": f"Невідомий голос {voice}"}, status_code=400)
+        return None, f"Невідомий голос {voice}"
     if campaign_type not in ("info", "operator"):
-        return JSONResponse({"error": f"Невідомий тип кампанії {campaign_type}"},
-                            status_code=400)
+        return None, f"Невідомий тип кампанії {campaign_type}"
+    vp = payload.get("voice_params") or {}
+    try:
+        speed, steps, silence = tts.clamp(
+            vp.get("speed", tts.DEFAULT_SPEED),
+            vp.get("steps", tts.DEFAULT_STEPS),
+            vp.get("silence", tts.DEFAULT_SILENCE))
+    except (TypeError, ValueError):
+        return None, "Некоректні параметри голосу"
+    ivr_form = payload.get("ivr") or {}
+    try:
+        compiled = flow_mod.compile_form(
+            message, voice, ivr_form,
+            voice_params={"speed": speed, "steps": steps, "silence": silence})
+    except flow_mod.FlowError as exc:
+        return None, str(exc)
+    except (TypeError, ValueError):
+        return None, "Некоректна IVR-форма"
+    return {
+        "message": message, "voice": voice, "campaign_type": campaign_type,
+        "voice_params": {"speed": speed, "steps": steps, "silence": silence},
+        "ivr": ivr_form, "compiled": compiled,
+    }, None
+
+
+# --- Scenarios (бібліотека збережених варіантів кампаній) --------------------------
+
+@app.get("/scenarios")
+def scenarios_list():
+    return {"scenarios": db.list_scenarios()}
+
+
+@app.post("/scenarios")
+def scenario_create(payload: dict = Body(...)):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Вкажіть назву сценарію"}, status_code=400)
+    fields, err = _parse_scenario_content(payload)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    try:
+        sid = db.create_scenario(name, fields["campaign_type"], fields["message"],
+                                 fields["voice"], fields["voice_params"], fields["ivr"])
+    except Exception:
+        return JSONResponse({"error": f"Сценарій «{name}» уже існує"}, status_code=409)
+    return {"ok": True, "id": sid}
+
+
+@app.post("/scenarios/{scenario_id}")
+def scenario_update(scenario_id: int, payload: dict = Body(...)):
+    if db.get_scenario(scenario_id) is None:
+        return JSONResponse({"error": "Сценарій не знайдено"}, status_code=404)
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Вкажіть назву сценарію"}, status_code=400)
+    fields, err = _parse_scenario_content(payload)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    try:
+        db.update_scenario(scenario_id, name, fields["campaign_type"],
+                           fields["message"], fields["voice"],
+                           fields["voice_params"], fields["ivr"])
+    except Exception:
+        return JSONResponse({"error": f"Сценарій «{name}» уже існує"}, status_code=409)
+    return {"ok": True}
+
+
+@app.delete("/scenarios/{scenario_id}")
+def scenario_delete(scenario_id: int):
+    db.delete_scenario(scenario_id)
+    return {"ok": True}
+
+
+# --- Campaign (§15) ---------------------------------------------------------------
+
+@app.post("/start")
+async def start(payload: dict = Body(...)):
+    # запуск зі збереженого сценарію (UI) або з інлайн-полів (call.yml, старі клієнти)
+    scenario = None
+    if payload.get("scenario_id") is not None:
+        scenario = db.get_scenario(payload["scenario_id"])
+        if scenario is None:
+            return JSONResponse({"error": "Сценарій не знайдено"}, status_code=400)
+    fields, err = _parse_scenario_content(scenario or payload)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    name = ((payload.get("name") or "").strip()
+            or (scenario["name"] if scenario else "Кампанія"))
 
     raw_numbers = payload.get("numbers") or []
     if isinstance(raw_numbers, str):
@@ -180,30 +267,16 @@ async def start(payload: dict = Body(...)):
     if profile is None:
         return JSONResponse({"error": "SIP-профіль не знайдено"}, status_code=400)
 
-    vp = payload.get("voice_params") or {}
-    try:
-        speed, steps, silence = tts.clamp(
-            vp.get("speed", tts.DEFAULT_SPEED),
-            vp.get("steps", tts.DEFAULT_STEPS),
-            vp.get("silence", tts.DEFAULT_SILENCE))
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "Некоректні параметри голосу"}, status_code=400)
-
-    try:
-        compiled = flow_mod.compile_form(
-            message, voice, payload.get("ivr"),
-            voice_params={"speed": speed, "steps": steps, "silence": silence})
-    except flow_mod.FlowError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "Некоректна IVR-форма"}, status_code=400)
-
     if jobs.campaign_running():
         return JSONResponse({"detail": "campaign already running"}, status_code=409)
     campaign_id = db.create_campaign(
-        name, campaign_type, message, voice, compiled,
-        profile["id"], f"{profile['username']}@{profile['server']}",
-        max_concurrent, numbers)
+        name, fields["campaign_type"], fields["message"], fields["voice"],
+        fields["compiled"], profile["id"],
+        f"{profile['username']}@{profile['server']}",
+        max_concurrent, numbers,
+        scenario_id=scenario["id"] if scenario else None,
+        scenario_name=scenario["name"] if scenario else None,
+        ivr_form=fields["ivr"])
     err = jobs.start_campaign(campaign_id)
     if err:  # raced with another start
         db.set_campaign_status(campaign_id, "stopped", error=err, finished=True)
@@ -442,7 +515,9 @@ async def retry_failed(campaign_id: int):
     new_id = db.create_campaign(
         f"{c['name']} (повтор)", c["campaign_type"], c["message_text"], c["voice"],
         json.loads(c["ivr_flow"]), c["profile_id"], c["profile_label"],
-        c["max_concurrent"], failed)
+        c["max_concurrent"], failed,
+        scenario_id=c["scenario_id"], scenario_name=c["scenario_name"],
+        ivr_form=json.loads(c["ivr_form"]) if c["ivr_form"] else None)
     err = jobs.start_campaign(new_id)
     if err:
         db.set_campaign_status(new_id, "stopped", error=err, finished=True)

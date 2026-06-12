@@ -29,15 +29,18 @@ function banner(el, msg, kind) {
 function pill(s) { return `<span class="pill ${s}">${STATUS_UK[s]||s}</span>`; }
 
 // ---------- tabs ----------
+function openTab(name) {
+  document.querySelectorAll("nav.tabs button").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  $("tab-" + name).classList.add("active");
+  if (name === "campaign") loadScenarios();   // підхопити правки з редактора
+  if (name === "scenarios") loadScenarios();
+  if (name === "settings") loadConfig();
+  if (name === "history") loadHistory();
+}
 document.querySelectorAll("nav.tabs button").forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll("nav.tabs button").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-    btn.classList.add("active");
-    $("tab-" + btn.dataset.tab).classList.add("active");
-    if (btn.dataset.tab === "settings") loadConfig();
-    if (btn.dataset.tab === "history") loadHistory();
-  };
+  btn.onclick = () => openTab(btn.dataset.tab);
 });
 
 // ---------- preview ----------
@@ -53,12 +56,17 @@ function voiceParams() {
     silence: parseFloat($("voicePause").value) >= 0 ? parseFloat($("voicePause").value) : 0.3,
   };
 }
-async function previewText(text, hintEl, btn) {
-  if (!text.trim()) { banner($("campBanner"), "Порожній текст", "err"); return; }
+async function previewText(text, hintEl, btn, voice, vp) {
+  // без явних voice/vp — беруться з контролів редактора сценаріїв
+  voice = voice || $("voice").value;
+  vp = vp || voiceParams();
+  const errBanner = $("tab-scenarios").classList.contains("active")
+    ? $("scnBanner") : $("campBanner");
+  if (!text.trim()) { banner(errBanner, "Порожній текст", "err"); return; }
   if (btn) btn.disabled = true; if (hintEl) hintEl.textContent = "синтез…";
-  const fd = new FormData(); fd.append("text", text); fd.append("voice", $("voice").value);
-  const vp = voiceParams();
-  fd.append("speed", vp.speed); fd.append("steps", vp.steps); fd.append("silence", vp.silence);
+  const fd = new FormData(); fd.append("text", text); fd.append("voice", voice);
+  fd.append("speed", vp.speed ?? 1.05); fd.append("steps", vp.steps ?? 8);
+  fd.append("silence", vp.silence ?? 0.3);
   const { ok, data } = await api("POST", "/preview", fd, true);
   if (btn) btn.disabled = false;
   if (!ok) { if (hintEl) hintEl.textContent = data.error || "помилка"; return; }
@@ -224,16 +232,161 @@ function collectIvr() {
 }
 renderIvr();
 
+// ---------- scenarios: library + editor ----------
+const TYPE_UK = { info: "інфо", operator: "оператор" };
+let scenarios = [];
+
+function selectedScenario() {
+  return scenarios.find(s => String(s.id) === $("scnSel").value);
+}
+
+// однорядковий підсумок дерева меню — і в списку, і на вкладці запуску
+function menuDigest(ivr) {
+  const m = (ivr || {}).menu || {};
+  if (!(m.options || []).length) return "без меню: програти повідомлення і завершити";
+  const walk = menu => (menu.options || []).map(o => {
+    if (o.action === "menu") return `${o.digit} → «${o.label || "підменю"}» (${walk(o.menu || {})})`;
+    if (o.action === "play") return `${o.digit} → «${o.label || "фраза"}»`;
+    return `${o.digit} → ${ACTION_UK[o.action] || o.action}`;
+  }).join(", ");
+  return walk(m);
+}
+
+async function loadScenarios() {
+  const { data } = await api("GET", "/scenarios");
+  scenarios = data.scenarios || [];
+  renderScnTable();
+  fillScnSelect();
+}
+
+function renderScnTable() {
+  const tb = $("scnTbl").querySelector("tbody");
+  $("scnEmptyHint").style.display = scenarios.length ? "none" : "";
+  tb.innerHTML = scenarios.map(s => `<tr>
+    <td>${esc(s.name)}</td><td>${TYPE_UK[s.campaign_type] || s.campaign_type}</td>
+    <td>${esc(s.voice)}</td><td class="muted">${esc(menuDigest(s.ivr))}</td>
+    <td style="white-space:nowrap">
+      <button class="small" data-scnedit="${s.id}" title="Редагувати">✎</button>
+      <button class="small" data-scnclone="${s.id}" title="Клонувати — копія для схожого сценарію">⧉</button>
+      <button class="small danger" data-scndel="${s.id}" title="Видалити">🗑</button></td></tr>`).join("");
+  tb.querySelectorAll("[data-scnedit]").forEach(b => b.onclick = () =>
+    editScenario(scenarios.find(s => s.id === +b.dataset.scnedit), false));
+  tb.querySelectorAll("[data-scnclone]").forEach(b => b.onclick = () =>
+    editScenario(scenarios.find(s => s.id === +b.dataset.scnclone), true));
+  tb.querySelectorAll("[data-scndel]").forEach(b => b.onclick = async () => {
+    if (!confirm("Видалити сценарій?")) return;
+    await api("DELETE", "/scenarios/" + b.dataset.scndel);
+    loadScenarios();
+  });
+}
+
+function fillScnSelect() {
+  const sel = $("scnSel"); const prev = sel.value;
+  sel.innerHTML = scenarios.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  $("startBtn").disabled = !scenarios.length;
+  syncDigest();
+}
+
+function syncDigest() {
+  const s = selectedScenario();
+  if (!s) {
+    $("scnDigest").textContent = "Немає сценаріїв — створіть перший у вкладці «Сценарії».";
+    return;
+  }
+  const snip = s.message.length > 120 ? s.message.slice(0, 120) + "…" : s.message;
+  $("scnDigest").innerHTML =
+    `<div>«${esc(snip)}»</div>
+     <div style="margin-top:4px">Голос ${esc(s.voice)} · тип: ${TYPE_UK[s.campaign_type] || s.campaign_type}
+       · меню: ${esc(menuDigest(s.ivr))}</div>`;
+}
+$("scnSel").onchange = syncDigest;
+$("scnListenBtn").onclick = () => {
+  const s = selectedScenario();
+  if (s) previewText(s.message, null, $("scnListenBtn"), s.voice, s.voice_params);
+};
+$("scnEditBtn").onclick = () => {
+  const s = selectedScenario();
+  if (!s) return;
+  openTab("scenarios");
+  editScenario(s, false);
+};
+
+function setSlider(id, labelId, value) {
+  $(id).value = value; $(labelId).textContent = $(id).value;
+}
+
+function editScenario(s, asClone) {
+  // клон = та сама форма без id: збереження створить новий запис
+  $("scnId").value = asClone ? "" : s.id;
+  $("scnName").value = asClone ? s.name + " (копія)" : s.name;
+  $("campaignType").value = s.campaign_type || "info";
+  $("text").value = s.message;
+  $("voice").value = s.voice || "F3";
+  const vp = s.voice_params || {};
+  setSlider("voiceSpeed", "voiceSpeedVal", vp.speed ?? 1.05);
+  setSlider("voicePause", "voicePauseVal", vp.silence ?? 0.3);
+  setSlider("voiceSteps", "voiceStepsVal", vp.steps ?? 8);
+  const ivr = s.ivr || {};
+  $("timeoutSec").value = ivr.timeout_sec ?? 5;
+  $("maxRepeats").value = ivr.max_repeats ?? 2;
+  ivrMenu = JSON.parse(JSON.stringify(ivr.menu || { announce_text: "", options: [] }));
+  renderIvr();
+  $("scnFormLegend").textContent = asClone
+    ? `Новий сценарій (копія «${s.name}»)` : `Сценарій «${s.name}»`;
+  window.scrollTo(0, $("scnFormLegend").offsetTop - 60);
+}
+
+function resetScenarioForm() {
+  $("scnId").value = ""; $("scnName").value = "";
+  $("campaignType").value = "info";
+  $("text").value = "";
+  $("voice").value = "F3";
+  setSlider("voiceSpeed", "voiceSpeedVal", 1.05);
+  setSlider("voicePause", "voicePauseVal", 0.3);
+  setSlider("voiceSteps", "voiceStepsVal", 8);
+  $("timeoutSec").value = 5; $("maxRepeats").value = 2;
+  ivrMenu = { announce_text: "", options: [] };
+  renderIvr();
+  $("scnFormLegend").textContent = "Новий сценарій";
+}
+$("scnReset").onclick = resetScenarioForm;
+
+function collectScenario() {
+  return {
+    name: $("scnName").value.trim(),
+    campaign_type: $("campaignType").value,
+    message: $("text").value,
+    voice: $("voice").value,
+    voice_params: voiceParams(),
+    ivr: collectIvr(),
+  };
+}
+
+async function saveScenario(asNew) {
+  const id = asNew ? "" : $("scnId").value;
+  const { ok, data } = await api("POST", id ? "/scenarios/" + id : "/scenarios",
+                                 collectScenario());
+  if (!ok) { banner($("scnBanner"), data.error || "Помилка", "err"); return; }
+  if (!id && data.id) $("scnId").value = data.id;
+  banner($("scnBanner"), "Сценарій збережено", "ok");
+  $("scnFormLegend").textContent = `Сценарій «${$("scnName").value.trim()}»`;
+  loadScenarios();
+}
+$("scnSave").onclick = () => saveScenario(false);
+$("scnSaveNew").onclick = () => saveScenario(true);
+
 // ---------- start campaign ----------
 $("startBtn").onclick = async () => {
-  const numbers = $("numbers").value.split("\n").map(s => s.trim()).filter(Boolean);
+  const s = selectedScenario();
+  if (!s) { banner($("campBanner"), "Оберіть сценарій", "err"); return; }
+  const numbers = $("numbers").value.split("\n").map(t => t.trim()).filter(Boolean);
   const payload = {
-    name: $("name").value, message: $("text").value, voice: $("voice").value,
-    voice_params: voiceParams(),
-    numbers, profile_id: parseInt($("profileSel").value, 10) || null,
-    campaign_type: $("campaignType").value,
+    scenario_id: s.id,
+    name: $("name").value,
+    numbers,
+    profile_id: parseInt($("profileSel").value, 10) || null,
     max_concurrent: parseInt($("maxConc").value || "1", 10),
-    ivr: collectIvr(),
   };
   $("startBtn").disabled = true;
   const { ok, data } = await api("POST", "/start", payload);
@@ -342,7 +495,9 @@ async function loadHistory() {
     const counters = STATUSES.filter(s=>cc[s]).map(s=>`${STATUS_UK[s]||s}:${cc[s]}`).join(" · ");
     const retry = `<button class="small" data-retry="${c.id}">↻ невдалі</button>`;
     const resume = c.status==="interrupted" ? `<button class="small primary" data-resume="${c.id}">▶ продовжити</button>` : "";
-    return `<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${pill(c.status)}</td>
+    const scn = c.scenario_name
+      ? `<div class="hint">сценарій: ${esc(c.scenario_name)}</div>` : "";
+    return `<tr><td>${c.id}</td><td>${esc(c.name)}${scn}</td><td>${pill(c.status)}</td>
       <td class="muted">${cc.total||0}: ${counters||"—"}</td>
       <td>${resume} ${retry} <button class="small" data-det="${c.id}">деталі</button></td></tr>
       <tr class="grow" id="det-${c.id}" style="display:none"><td colspan="5"></td></tr>`;
@@ -382,5 +537,6 @@ function jattr(o) { return esc(JSON.stringify(o)); }
 
 // ---------- boot ----------
 loadConfig();
+loadScenarios();
 pollStatus();
 setInterval(() => { if ($("tab-campaign").classList.contains("active")) pollStatus(); }, 1500);
