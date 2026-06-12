@@ -114,15 +114,22 @@ def build_dial_string(number, gateway="flysip", template=None):
     return (template or DIAL_STRING_TEMPLATE).format(number=num, gw=gateway)
 
 
+# ignore_early_media: our &socket() app connects only AFTER the real 200 OK
+# (not on 183), so the message never plays into ringback regardless. We must
+# NOT set ignore_early_media=true here: with trunks that send `a=sendonly`
+# early media (FlySIP ringback), it latches the call recvonly and never flips
+# to sendrecv on answer — we receive their audio but transmit silence
+# (one-way). Default off; set IGNORE_EARLY_MEDIA=1 only if a trunk needs it.
+IGNORE_EARLY_MEDIA = os.environ.get("IGNORE_EARLY_MEDIA", "0") in ("1", "true", "yes")
+
+
 def _originate_vars(call_uuid):
-    """ignore_early_media: with 183 early media (common on mobile networks)
-    the call must NOT count as answered before the real 200 OK, or the message
-    plays into the ringing tone (v1 lesson — do not "optimize" away)."""
     parts = [
         f"origination_uuid={call_uuid}",
         f"originate_timeout={ORIGINATE_TIMEOUT}",
-        "ignore_early_media=true",
     ]
+    if IGNORE_EARLY_MEDIA:
+        parts.append("ignore_early_media=true")
     if CALLER_ID_NUMBER:
         parts.append(f"origination_caller_id_number={CALLER_ID_NUMBER}")
     if CALLER_ID_NAME:
