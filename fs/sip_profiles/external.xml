@@ -30,6 +30,11 @@
     <param name="rtp-timer-name" value="soft"/>
     <param name="rtp-timeout-sec" value="300"/>
     <param name="rtp-hold-timeout-sec" value="1800"/>
+    <!-- НЕ трактувати a=sendonly/inactive як «утримання» (hold). FlySIP шле
+         a=sendonly у ранньому медіа (ringback), через що FreeSWITCH глушив наш
+         передавальний напрямок (recvonly) і повідомлення не доходило. З
+         disable-hold медіа лишається sendrecv після відповіді. -->
+    <param name="disable-hold" value="true"/>
 
     <param name="manage-presence" value="false"/>
     <param name="nonce-ttl" value="60"/>

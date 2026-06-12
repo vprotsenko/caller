@@ -114,13 +114,13 @@ def build_dial_string(number, gateway="flysip", template=None):
     return (template or DIAL_STRING_TEMPLATE).format(number=num, gw=gateway)
 
 
-# ignore_early_media: our &socket() app connects only AFTER the real 200 OK
-# (not on 183), so the message never plays into ringback regardless. We must
-# NOT set ignore_early_media=true here: with trunks that send `a=sendonly`
-# early media (FlySIP ringback), it latches the call recvonly and never flips
-# to sendrecv on answer — we receive their audio but transmit silence
-# (one-way). Default off; set IGNORE_EARLY_MEDIA=1 only if a trunk needs it.
-IGNORE_EARLY_MEDIA = os.environ.get("IGNORE_EARLY_MEDIA", "0") in ("1", "true", "yes")
+# ignore_early_media=true is REQUIRED: without it the &socket() app runs on
+# Pre-Answer (183 ringback) and the message plays into the ringtone, hanging up
+# before the human answers. Its side effect — a trunk that sends `a=sendonly`
+# early media (FlySIP) gets latched recvonly (one-way, we transmit silence) —
+# is fixed at the sofia profile level with disable-hold=true (so a=sendonly is
+# not treated as hold). Keep BOTH. Set IGNORE_EARLY_MEDIA=0 only to debug.
+IGNORE_EARLY_MEDIA = os.environ.get("IGNORE_EARLY_MEDIA", "1") in ("1", "true", "yes")
 
 
 def _originate_vars(call_uuid):
