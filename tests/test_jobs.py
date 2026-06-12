@@ -53,16 +53,16 @@ def test_build_originate_cmd_shape():
     assert cmd.startswith("originate {")
     assert "origination_uuid=uuid-1" in cmd
     assert "originate_timeout=" in cmd
-    # ignore_early_media is OFF by default (it broke one-way audio on trunks
-    # that send a=sendonly early media)
-    assert "ignore_early_media" not in cmd
+    # ignore_early_media ON by default: the &socket() app must run on the real
+    # 200 OK, not on 183 ringback (one-way audio is fixed via media reneg)
+    assert "ignore_early_media=true" in cmd
     assert cmd.endswith("loopback/9999/default &playback(/app/audio/call.wav)")
 
 
-def test_ignore_early_media_opt_in(monkeypatch):
-    monkeypatch.setattr(jobs, "IGNORE_EARLY_MEDIA", True)
+def test_ignore_early_media_opt_out(monkeypatch):
+    monkeypatch.setattr(jobs, "IGNORE_EARLY_MEDIA", False)
     cmd = jobs.build_originate_cmd("sofia/gateway/gw/3", "/a.wav", "u1")
-    assert "ignore_early_media=true" in cmd
+    assert "ignore_early_media" not in cmd
 
 
 def test_build_campaign_originate_cmd_hands_off_to_socket():

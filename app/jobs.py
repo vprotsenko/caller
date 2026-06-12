@@ -121,6 +121,10 @@ def build_dial_string(number, gateway="flysip", template=None):
 # is fixed at the sofia profile level with disable-hold=true (so a=sendonly is
 # not treated as hold). Keep BOTH. Set IGNORE_EARLY_MEDIA=0 only to debug.
 IGNORE_EARLY_MEDIA = os.environ.get("IGNORE_EARLY_MEDIA", "1") in ("1", "true", "yes")
+# Re-INVITE right after answer so FreeSWITCH adopts the 200 OK media address +
+# sendrecv (fixes one-way audio on trunks with a=sendonly early media). On by
+# default; set MEDIA_RENEG_ON_ANSWER=0 to disable.
+MEDIA_RENEG_ON_ANSWER = os.environ.get("MEDIA_RENEG_ON_ANSWER", "1") in ("1", "true", "yes")
 
 
 def _originate_vars(call_uuid):
@@ -398,6 +402,17 @@ async def _dial_number(client, row, flow, files, pool=None, campaign_type="info"
             return
 
         _active["calls"][call_uuid]["state"] = "ivr"
+        # Force a media re-negotiation right after answer: trunks that send
+        # `a=sendonly` early media (FlySIP ringback) make FreeSWITCH latch the
+        # remote media address/direction from the 183, not the 200 OK, so our
+        # audio is never transmitted (one-way silence). A re-INVITE makes the
+        # provider re-answer with its real media address + sendrecv. The WAV's
+        # LEAD_IN silence covers the ~200 ms reneg. Best-effort.
+        if MEDIA_RENEG_ON_ANSWER:
+            try:
+                await client.api(f"uuid_media_reneg {call_uuid}")
+            except Exception:  # noqa: BLE001 — never fail the call on this
+                logger.debug("media reneg failed for %s", call_uuid)
         budget = ANSWERED_CALL_BUDGET + (BRIDGE_MAX_SECONDS if pool else 0)
         try:
             outcome = await asyncio.wait_for(ctx.done, budget)
