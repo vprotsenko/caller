@@ -207,12 +207,13 @@ def outcome_status(outcome):
 
 
 def prompt_path(text, voice, speed=tts.DEFAULT_SPEED, steps=tts.DEFAULT_STEPS,
-                silence=tts.DEFAULT_SILENCE):
+                silence=tts.DEFAULT_SILENCE, lang=None):
     # "|lead0" distinguishes prompts without a baked-in lead-in from the old
     # cache that had it; the generation parameters are part of the key,
     # otherwise a speed change would serve the old WAV from the cache
+    lang = lang or tts.DEFAULT_LANG
     digest = hashlib.sha1(
-        f"{text}|{voice}|{tts.DEFAULT_LANG}|lead0|{speed}|{steps}|{silence}"
+        f"{text}|{voice}|{lang}|lead0|{speed}|{steps}|{silence}"
         .encode()).hexdigest()[:16]
     return os.path.join(AUDIO_DIR, f"prompt_{digest}.wav")
 
@@ -230,12 +231,13 @@ def prerender_prompts(flow):
         speed = float(prompt.get("speed", tts.DEFAULT_SPEED))
         steps = int(prompt.get("steps", tts.DEFAULT_STEPS))
         silence = float(prompt.get("silence", tts.DEFAULT_SILENCE))
-        path = prompt_path(text, prompt["voice"], speed, steps, silence)
+        lang = prompt.get("lang") or tts.DEFAULT_LANG
+        path = prompt_path(text, prompt["voice"], speed, steps, silence, lang)
         if not os.path.isfile(path):
             native = path + ".native.wav"
             tts.synthesize_telephony(text, prompt["voice"], native, path,
-                                     lead_in=0.0, speed=speed, steps=steps,
-                                     silence=silence)
+                                     lead_in=0.0, lang=lang, speed=speed,
+                                     steps=steps, silence=silence)
             try:
                 os.remove(native)
             except OSError:

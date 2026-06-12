@@ -54,7 +54,7 @@ enough for tests.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LANG_CODE` | `uk` | TTS language |
+| `LANG_CODE` | `uk` | Default TTS language. A scenario can override it per campaign via `voice_params.lang` (UI: the «Мова» select); see `tts.LANGS` for the supported codes |
 
 ## Fixed by docker-compose (not meant to be overridden)
 

@@ -125,6 +125,29 @@ def test_prompt_path_is_cache_key(tmp_path, monkeypatch):
     assert a != jobs.prompt_path("Привіт", "F3", speed=1.5)
     assert a != jobs.prompt_path("Привіт", "F3", steps=16)
     assert a != jobs.prompt_path("Привіт", "F3", silence=1.0)
+    # language is in the key; omitted == the default language
+    assert a != jobs.prompt_path("Привіт", "F3", lang="en")
+    assert a == jobs.prompt_path("Привіт", "F3", lang=jobs.tts.DEFAULT_LANG)
+
+
+def test_prerender_prompts_passes_lang(tmp_path, monkeypatch):
+    """Per-prompt lang reaches synthesis; a prompt without one falls back to
+    the default language (pre-lang scenarios keep working)."""
+    monkeypatch.setattr(jobs, "AUDIO_DIR", str(tmp_path))
+    calls = {}
+
+    def fake_synth(text, voice, native, tel, **kw):
+        calls[text] = kw
+        return tel
+
+    monkeypatch.setattr(jobs.tts, "synthesize_telephony", fake_synth)
+    files = jobs.prerender_prompts({"prompts": {
+        "main": {"text": "Hello", "voice": "F3", "lang": "en"},
+        "menu": {"text": "Привіт", "voice": "F3"},
+    }})
+    assert calls["Hello"]["lang"] == "en"
+    assert calls["Привіт"]["lang"] == jobs.tts.DEFAULT_LANG
+    assert files["main"] != files["menu"]
 
 
 # --- hangup cause -> status -------------------------------------------------------

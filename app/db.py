@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS scenario (
     campaign_type TEXT NOT NULL DEFAULT 'info',
     message_text  TEXT NOT NULL,
     voice         TEXT NOT NULL,
-    voice_params  TEXT NOT NULL DEFAULT '{}',  -- JSON {speed, steps, silence}
+    voice_params  TEXT NOT NULL DEFAULT '{}',  -- JSON {speed, steps, silence, lang}
     ivr_form      TEXT NOT NULL DEFAULT '{}',  -- JSON of the RECURSIVE FORM, not the compiled graph:
                                                -- the editor round-trips it; compilation happens at start
     created_at    REAL NOT NULL,

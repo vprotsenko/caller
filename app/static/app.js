@@ -53,6 +53,8 @@ const EN = {
   "З оператором (автовідповідач → покласти слухавку)":
     "With an operator (answering machine → hang up)",
   "Текст повідомлення": "Message text",
+  "Мова": "Language",
+  "інша (без мови)": "other (no language)",
   "Швидкість:": "Speed:",
   "Пауза між реченнями, с:": "Pause between sentences, s:",
   "Якість синтезу:": "Synthesis quality:",
@@ -170,6 +172,7 @@ const SERVER_RE = [
   [/^Порожній текст повідомлення$/, () => "Empty message text"],
   [/^Порожній текст$/, () => "Empty text"],
   [/^Невідомий голос (.+)$/, m => `Unknown voice ${m[1]}`],
+  [/^Невідома мова (.+)$/, m => `Unknown language ${m[1]}`],
   [/^Помилка синтезу$/, () => "Synthesis failed"],
   [/^Невідомий тип кампанії (.+)$/, m => `Unknown campaign type ${m[1]}`],
   [/^Некоректні параметри голосу$/, () => "Invalid voice parameters"],
@@ -310,6 +313,7 @@ function voiceParams() {
     speed: parseFloat($("voiceSpeed").value) || 1.05,
     steps: parseInt($("voiceSteps").value, 10) || 8,
     silence: parseFloat($("voicePause").value) >= 0 ? parseFloat($("voicePause").value) : 0.3,
+    lang: $("voiceLang").value || "uk",
   };
 }
 async function previewText(text, hintEl, btn, voice, vp) {
@@ -322,7 +326,7 @@ async function previewText(text, hintEl, btn, voice, vp) {
   if (btn) btn.disabled = true; if (hintEl) hintEl.textContent = t("синтез…");
   const fd = new FormData(); fd.append("text", text); fd.append("voice", voice);
   fd.append("speed", vp.speed ?? 1.05); fd.append("steps", vp.steps ?? 8);
-  fd.append("silence", vp.silence ?? 0.3);
+  fd.append("silence", vp.silence ?? 0.3); fd.append("lang", vp.lang ?? "uk");
   const { ok, data } = await api("POST", "/preview", fd, true);
   if (btn) btn.disabled = false;
   if (!ok) { if (hintEl) hintEl.textContent = data.error || tr("помилка", "error"); return; }
@@ -499,6 +503,13 @@ function selectedScenario() {
   return scenarios.find(s => String(s.id) === $("scnSel").value);
 }
 
+// "F3" for Ukrainian, "F3 · en" otherwise — the language matters only when
+// it differs from the default
+function voiceLabel(s) {
+  const lang = (s.voice_params || {}).lang;
+  return esc(s.voice) + (lang && lang !== "uk" ? ` · ${esc(lang)}` : "");
+}
+
 // one-line digest of the menu tree — both in the list and on the launch tab
 function menuDigest(ivr) {
   const m = (ivr || {}).menu || {};
@@ -523,7 +534,7 @@ function renderScnTable() {
   $("scnEmptyHint").style.display = scenarios.length ? "none" : "";
   tb.innerHTML = scenarios.map(s => `<tr>
     <td>${esc(s.name)}</td><td>${t(TYPE_UK[s.campaign_type] || s.campaign_type)}</td>
-    <td>${esc(s.voice)}</td><td class="muted">${esc(menuDigest(s.ivr))}</td>
+    <td>${voiceLabel(s)}</td><td class="muted">${esc(menuDigest(s.ivr))}</td>
     <td style="white-space:nowrap">
       <button class="small" data-scnedit="${s.id}" title="${t("Редагувати")}">✎</button>
       <button class="small" data-scnclone="${s.id}" title="${t("Клонувати — копія для схожого сценарію")}">⧉</button>
@@ -556,7 +567,7 @@ function syncDigest() {
   const snip = s.message.length > 120 ? s.message.slice(0, 120) + "…" : s.message;
   $("scnDigest").innerHTML =
     `<div>«${esc(snip)}»</div>
-     <div style="margin-top:4px">${t("Голос")} ${esc(s.voice)} · ${t("тип:")} ${t(TYPE_UK[s.campaign_type] || s.campaign_type)}
+     <div style="margin-top:4px">${t("Голос")} ${voiceLabel(s)} · ${t("тип:")} ${t(TYPE_UK[s.campaign_type] || s.campaign_type)}
        · ${t("меню:")} ${esc(menuDigest(s.ivr))}</div>`;
 }
 $("scnSel").onchange = syncDigest;
@@ -597,6 +608,7 @@ function editScenario(s, asClone) {
   setSlider("voiceSpeed", "voiceSpeedVal", vp.speed ?? 1.05);
   setSlider("voicePause", "voicePauseVal", vp.silence ?? 0.3);
   setSlider("voiceSteps", "voiceStepsVal", vp.steps ?? 8);
+  $("voiceLang").value = vp.lang || "uk";
   const ivr = s.ivr || {};
   $("timeoutSec").value = ivr.timeout_sec ?? 5;
   $("maxRepeats").value = ivr.max_repeats ?? 2;
@@ -615,6 +627,7 @@ function resetScenarioForm() {
   setSlider("voiceSpeed", "voiceSpeedVal", 1.05);
   setSlider("voicePause", "voicePauseVal", 0.3);
   setSlider("voiceSteps", "voiceStepsVal", 8);
+  $("voiceLang").value = "uk";
   $("timeoutSec").value = 5; $("maxRepeats").value = 2;
   ivrMenu = { announce_text: "", options: [] };
   renderIvr();

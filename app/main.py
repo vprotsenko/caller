@@ -122,18 +122,21 @@ def preview(
     speed: float = Form(tts.DEFAULT_SPEED),
     steps: int = Form(tts.DEFAULT_STEPS),
     silence: float = Form(tts.DEFAULT_SILENCE),
+    lang: str = Form(tts.DEFAULT_LANG),
 ):
     text = jobs.normalize_text(text).strip()
     if not text:
         return JSONResponse({"error": "Порожній текст"}, status_code=400)
     if voice not in tts.VOICES:
         return JSONResponse({"error": f"Невідомий голос {voice}"}, status_code=400)
+    if lang not in tts.LANGS:
+        return JSONResponse({"error": f"Невідома мова {lang}"}, status_code=400)
     speed, steps, silence = tts.clamp(speed, steps, silence)
 
     out = os.path.join(AUDIO_DIR, f"preview_{voice}.wav")
     try:
-        tts.synthesize_native(text, voice, out, speed=speed, steps=steps,
-                              silence=silence)
+        tts.synthesize_native(text, voice, out, lang=lang, speed=speed,
+                              steps=steps, silence=silence)
     except Exception:  # noqa: BLE001 — the model may reject the params/text
         logger.exception("preview synthesis failed")
         return JSONResponse({"error": "Помилка синтезу"}, status_code=500)
@@ -163,18 +166,22 @@ def _parse_scenario_content(payload):
             vp.get("silence", tts.DEFAULT_SILENCE))
     except (TypeError, ValueError):
         return None, "Некоректні параметри голосу"
+    lang = vp.get("lang") or tts.DEFAULT_LANG
+    if lang not in tts.LANGS:
+        return None, f"Невідома мова {lang}"
+    voice_params = {"speed": speed, "steps": steps, "silence": silence,
+                    "lang": lang}
     ivr_form = payload.get("ivr") or {}
     try:
         compiled = flow_mod.compile_form(
-            message, voice, ivr_form,
-            voice_params={"speed": speed, "steps": steps, "silence": silence})
+            message, voice, ivr_form, voice_params=voice_params)
     except flow_mod.FlowError as exc:
         return None, str(exc)
     except (TypeError, ValueError):
         return None, "Некоректна IVR-форма"
     return {
         "message": message, "voice": voice, "campaign_type": campaign_type,
-        "voice_params": {"speed": speed, "steps": steps, "silence": silence},
+        "voice_params": voice_params,
         "ivr": ivr_form, "compiled": compiled,
     }, None
 
@@ -325,12 +332,15 @@ async def call(
     voice: str = Form(tts.DEFAULT_VOICE),
     speed: float = Form(1.05),
     steps: int = Form(8),
+    lang: str = Form(tts.DEFAULT_LANG),
 ):
     text = jobs.normalize_text(text).strip()
     if not text:
         return JSONResponse({"error": "Порожній текст"}, status_code=400)
     if voice not in tts.VOICES:
         return JSONResponse({"error": f"Невідомий голос {voice}"}, status_code=400)
+    if lang not in tts.LANGS:
+        return JSONResponse({"error": f"Невідома мова {lang}"}, status_code=400)
     num = jobs.normalize_number(number)
     if num is None:
         return JSONResponse({"error": f"Некоректний номер {number}"}, status_code=400)
@@ -344,7 +354,7 @@ async def call(
         try:
             await asyncio.to_thread(
                 tts.synthesize_telephony, text, voice, native, tel,
-                speed=speed, steps=steps, silence=silence)
+                lang=lang, speed=speed, steps=steps, silence=silence)
         except Exception:
             logger.exception("synthesis failed")
             return JSONResponse({"error": "Помилка синтезу"}, status_code=500)

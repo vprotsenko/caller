@@ -70,12 +70,13 @@ def test_compile_menu_text_override():
 def test_compile_voice_params_reach_every_prompt():
     """The flow snapshot is self-contained: resume/retry must synthesize with
     the same parameters, so they go into every prompt."""
-    vp = {"speed": 1.3, "steps": 16, "silence": 0.5}
+    vp = {"speed": 1.3, "steps": 16, "silence": 0.5, "lang": "en"}
     flow = flow_mod.compile_form("Привіт", "F3", FULL_FORM, voice_params=vp)
     for prompt in flow["prompts"].values():
         assert prompt["speed"] == 1.3
         assert prompt["steps"] == 16
         assert prompt["silence"] == 0.5
+        assert prompt["lang"] == "en"
 
 
 def test_compile_without_voice_params_keeps_plain_prompts():

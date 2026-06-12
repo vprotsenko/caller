@@ -27,6 +27,7 @@ Synthesize text and return a playable URL.
 | `text` | required | Normalized before synthesis (typographic punctuation → ASCII) |
 | `voice` | default voice | Must be one of `tts.VOICES` |
 | `speed`, `steps`, `silence` | model defaults | Clamped to safe ranges |
+| `lang` | `LANG_CODE` (`uk`) | Synthesis language; one of `tts.LANGS` (the 31 ISO codes Supertonic-3 supports, plus the `na` fallback) |
 
 Returns `{"voice", "url", "secs"}`.
 
@@ -39,7 +40,7 @@ dry-run-compiles the form, so an invalid scenario cannot be saved.
 | Route | Description |
 |---|---|
 | `GET /scenarios` | List saved scenarios |
-| `POST /scenarios` | Create. JSON: `name`, `message`, `voice`, `campaign_type` (`info`\|`operator`), `voice_params` (`speed`/`steps`/`silence`), `ivr` (recursive form). 409 on duplicate name |
+| `POST /scenarios` | Create. JSON: `name`, `message`, `voice`, `campaign_type` (`info`\|`operator`), `voice_params` (`speed`/`steps`/`silence`/`lang`), `ivr` (recursive form). 409 on duplicate name |
 | `POST /scenarios/{id}` | Update (same body) |
 | `DELETE /scenarios/{id}` | Delete. Campaign history is unaffected (campaigns keep snapshots) |
 
@@ -53,6 +54,12 @@ Start a campaign — either from a saved scenario or from inline fields.
 |---|---|
 | `scenario_id` | Use a saved scenario as the content source |
 | `message`, `voice`, `campaign_type`, `voice_params`, `ivr` | Inline alternative to `scenario_id` (same shape as scenario content). A legacy flat form with flags `ivr_operator`/`ivr_repeat`/`ivr_optout` is also accepted |
+
+`voice_params.lang` sets the synthesis language for every prompt of the
+campaign (default `LANG_CODE`, i.e. Ukrainian). The built-in spoken texts —
+auto-generated menu announcements, digit words, default connect/optout
+phrases — stay Ukrainian; for a non-Ukrainian campaign write the level
+announcements and connect/optout texts yourself in the target language.
 | `name` | Campaign name (defaults to the scenario name) |
 | `numbers` | List of numbers, or a newline-separated string. Each is normalized; any invalid number fails the whole request |
 | `max_concurrent` | 1..5, default 1 |
@@ -75,7 +82,7 @@ campaign is active (one campaign at a time).
 
 Dials one number and plays one synthesized message (no IVR, no database
 record). Useful for trunk smoke tests. Fields: `number`, `text`, `voice`,
-`speed`, `steps`. One ad-hoc call at a time (409 while one is in flight).
+`speed`, `steps`, `lang`. One ad-hoc call at a time (409 while one is in flight).
 Returns `{"ok", "number", "answered", "cause", "status", "uuid"}`.
 
 ## SIP profiles

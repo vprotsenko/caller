@@ -147,7 +147,10 @@ A process restart marks the campaign `interrupted`; resume is explicit only
 - **event_socket listens on 127.0.0.1 only**, password from `.env`.
 - **Ukrainian stays canonical**: spoken TTS content (`flow.DIGIT_WORDS`,
   `ANNOUNCE_TEMPLATES`, `DEFAULT_*_TEXT`) is ALWAYS Ukrainian — callees hear
-  it regardless of the UI language. Server-side strings (API errors,
+  it regardless of the UI language. A scenario may set `voice_params.lang`
+  (one of `tts.LANGS`) to synthesize ITS OWN texts in another language, but
+  the built-in templates stay Ukrainian — non-uk scenarios must fill in the
+  announce/connect/optout texts themselves. Server-side strings (API errors,
   `_log(...)` lines) stay Ukrainian; English happens only client-side via the
   `EN` map / `trServer` / `trLog` in app.js. A new UI string must be added to
   the `EN` map (and, for server messages, a pattern to `SERVER_RE`/`LOG_RE`),

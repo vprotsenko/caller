@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 VOICES = ["F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"]
 DEFAULT_VOICE = "F3"
 DEFAULT_LANG = os.environ.get("LANG_CODE", "uk")
+# Languages Supertonic-3 can synthesize (ISO codes per the library README),
+# plus "na" — the model's own fallback for unknown/unsupported languages.
+LANGS = frozenset([
+    "ar", "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hi",
+    "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "na", "nl", "pl", "pt",
+    "ro", "ru", "sk", "sl", "sv", "tr", "uk", "vi",
+])
 
 # Generation parameters (bounds live in clamp): speech speed, diffusion steps
 # (more = better quality and slower synthesis), pause between sentences.
