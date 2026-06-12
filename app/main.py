@@ -91,9 +91,15 @@ _STATIC_TYPES = {".js": "application/javascript", ".css": "text/css",
                  ".html": "text/html"}
 
 
+# no-cache = «ревалідуй перед використанням» (з ETag від FileResponse це 304):
+# без нього браузер після редеплою тримає стару app.js до евристичного
+# протухання, і нова розмітка лишається без обробників (порожній IVR-редактор)
+_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 def index():
-    return FileResponse(INDEX_PATH, media_type="text/html")
+    return FileResponse(INDEX_PATH, media_type="text/html", headers=_NO_CACHE)
 
 
 @app.get("/static/{name}")
@@ -102,7 +108,8 @@ def static_file(name: str):
     if not os.path.isfile(path):
         return JSONResponse({"error": "not found"}, status_code=404)
     ext = os.path.splitext(path)[1]
-    return FileResponse(path, media_type=_STATIC_TYPES.get(ext, "application/octet-stream"))
+    return FileResponse(path, media_type=_STATIC_TYPES.get(ext, "application/octet-stream"),
+                        headers=_NO_CACHE)
 
 
 # --- TTS preview ----------------------------------------------------------------

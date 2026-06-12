@@ -14,7 +14,9 @@ async function api(method, url, body, isForm) {
   const opts = { method };
   if (body && isForm) { opts.body = body; }
   else if (body) { opts.headers = {"Content-Type":"application/json"}; opts.body = JSON.stringify(body); }
-  const r = await fetch(url, opts);
+  let r;
+  try { r = await fetch(url, opts); }
+  catch { return { ok: false, status: 0, data: { error: "Немає з'єднання з сервером" } }; }
   let data = {};
   try { data = await r.json(); } catch {}
   if (!r.ok && !data.error && !data.detail) data.error = "HTTP " + r.status;
@@ -64,44 +66,163 @@ async function previewText(text, hintEl, btn) {
   const p = $("player"); p.src = data.url + "?t=" + Date.now(); p.style.display = "block"; p.play();
 }
 $("previewBtn").onclick = () => previewText($("text").value, $("previewHint"), $("previewBtn"));
-document.querySelectorAll("button[data-prev]").forEach(b => {
-  b.onclick = () => previewText($(b.dataset.prev).value || $(b.dataset.prev).placeholder, null, b);
-});
 
-// ---------- IVR form toggles ----------
-function bindToggle(cb, ...els) {
-  const sync = () => els.forEach(e => e.style.display = cb.checked ? "" : "none");
-  cb.onchange = () => { sync(); syncMenuTimeout(); }; sync();
-}
-// Дзеркало flow.menu_announcement (сервер — джерело правди): плейсхолдер
-// показує автотекст, який буде синтезовано, якщо поле лишити порожнім.
-const MENU_TEXTS = {
-  opOperator: "Щоб з'єднатися з оператором, натисніть один.",
-  opRepeat: "Щоб прослухати повідомлення ще раз, натисніть два.",
-  opOptout: "Щоб відписатися від дзвінків, натисніть нуль.",
+// ---------- IVR editor (рекурсивне дерево рівнів) ----------
+// Стан — один об'єкт тієї ж форми, що йде у POST /start (ivr.menu).
+// Структурні зміни (додати/видалити опцію, змінити дію/клавішу) повністю
+// перемальовують редактор зі стану; текстові поля пишуть у стан напряму,
+// без ре-рендеру — інакше губиться фокус під час набору.
+const IVR_MAX_DEPTH = 4; // дзеркало flow.MAX_DEPTH
+const DIGIT_WORDS = {"0":"нуль","1":"один","2":"два","3":"три","4":"чотири",
+  "5":"п'ять","6":"шість","7":"сім","8":"вісім","9":"дев'ять"};
+const ACTION_UK = {operator:"оператор", replay:"повторити", menu:"підменю",
+  play:"фраза", back:"назад", optout:"відписатися", hangup:"завершити"};
+const THEN_UK = {stay:"потім — знову це меню", back:"потім — на рівень вище",
+  hangup:"потім — завершити дзвінок"};
+// Дзеркало flow.ANNOUNCE_TEMPLATES (сервер — джерело правди): плейсхолдер
+// показує автотекст, який буде синтезовано, якщо анонс лишити порожнім.
+const ANNOUNCE_UK = {
+  operator: w => `Щоб з'єднатися з оператором, натисніть ${w}.`,
+  replay: w => `Щоб прослухати ще раз, натисніть ${w}.`,
+  optout: w => `Щоб відписатися від дзвінків, натисніть ${w}.`,
+  back: w => `Щоб повернутися назад, натисніть ${w}.`,
+  hangup: w => `Щоб завершити дзвінок, натисніть ${w}.`,
 };
-function syncMenuTimeout() {
-  const any = $("opOperator").checked || $("opRepeat").checked || $("opOptout").checked;
-  $("menuTimeoutWrap").style.display = any ? "" : "none";
-  $("menuAnnounceWrap").style.display = any ? "" : "none";
-  $("menuText").placeholder = Object.keys(MENU_TEXTS)
-    .filter(id => $(id).checked).map(id => MENU_TEXTS[id]).join(" ");
+const DEFAULT_CONNECT_TEXT = "Зачекайте, з'єднуємо з оператором";
+const DEFAULT_OPTOUT_TEXT = "Вас видалено зі списку";
+
+let ivrMenu = { announce_text: "", options: [] };
+
+function announceMirror(options) {
+  return options.map(o => {
+    const w = DIGIT_WORDS[o.digit];
+    if (!w) return "";
+    if (ANNOUNCE_UK[o.action]) return ANNOUNCE_UK[o.action](w);
+    const label = (o.label || "").trim();
+    return label ? `${label}: натисніть ${w}.` : "";
+  }).filter(Boolean).join(" ");
 }
-bindToggle($("opOperator"), $("opConnectText"), document.querySelector('[data-prev=opConnectText]'));
-bindToggle($("opRepeat"), $("repeatMaxWrap"));
-bindToggle($("opOptout"), $("opOptoutText"), document.querySelector('[data-prev=opOptoutText]'));
-syncMenuTimeout();
+function el(tag, props = {}, ...kids) {
+  const node = document.createElement(tag);
+  Object.assign(node, props);
+  kids.forEach(k => node.append(k));
+  return node;
+}
+function fld(text) { return el("label", { className: "fld", textContent: text }); }
+function frow(...kids) { return el("div", { className: "frow" }, ...kids); }
+function prevBtn(getText) {
+  const b = el("button", { type: "button", className: "small", textContent: "▶" });
+  b.onclick = () => previewText(getText(), null, b);
+  return b;
+}
+function freeDigit(options) {
+  const used = new Set(options.map(o => o.digit));
+  return "1234567890".split("").find(d => !used.has(d)) ?? null;
+}
+
+function renderIvr() {
+  $("ivrRoot").replaceChildren(renderLevel(ivrMenu, 1));
+  $("menuTimeoutWrap").style.display = ivrMenu.options.length ? "" : "none";
+}
+
+function renderLevel(menu, depth) {
+  const wrap = el("div", { className: depth > 1 ? "ivr-level" : "" });
+  if (depth > 1) {
+    const ta = el("textarea", { rows: 2, value: menu.text || "",
+      placeholder: "Необов'язково: грає один раз при вході на цей рівень" });
+    ta.oninput = () => menu.text = ta.value;
+    wrap.append(fld("Текст рівня"), frow(ta, prevBtn(() => ta.value)));
+  }
+  let syncAnnounce = () => {};
+  if (menu.options.length) {
+    const ann = el("input", { value: menu.announce_text || "" });
+    ann.oninput = () => menu.announce_text = ann.value;
+    syncAnnounce = () => ann.placeholder = announceMirror(menu.options);
+    syncAnnounce();
+    wrap.append(fld("Анонс опцій (порожньо = автотекст; грає на кожному раунді очікування)"),
+                frow(ann, prevBtn(() => ann.value || ann.placeholder)));
+  }
+  menu.options.forEach((opt, i) =>
+    wrap.append(renderOption(menu, opt, i, depth, syncAnnounce)));
+  const add = el("button", { type: "button", className: "small", textContent: "+ опція" });
+  add.onclick = () => {
+    const digit = freeDigit(menu.options);
+    if (digit === null) return;
+    menu.options.push({ digit, action: "operator", connect_text: "" });
+    renderIvr();
+  };
+  wrap.append(add);
+  return wrap;
+}
+
+function renderOption(menu, opt, idx, depth, syncAnnounce) {
+  const row = el("div", { className: "opt-row" });
+  const dig = el("select", { title: "Клавіша" });
+  "1234567890".split("").forEach(d =>
+    dig.append(el("option", { value: d, textContent: d, selected: opt.digit === d })));
+  dig.onchange = () => { opt.digit = dig.value; renderIvr(); };
+  const act = el("select", { title: "Дія" });
+  Object.keys(ACTION_UK).forEach(a => {
+    if (a === "back" && depth === 1) return;          // нікуди повертатись
+    if (a === "menu" && depth >= IVR_MAX_DEPTH) return; // ліміт глибини
+    act.append(el("option", { value: a, textContent: ACTION_UK[a],
+                              selected: opt.action === a }));
+  });
+  act.onchange = () => {
+    // дії мають різні поля — при зміні скидаємо все, крім клавіші
+    Object.keys(opt).forEach(k => { if (k !== "digit") delete opt[k]; });
+    opt.action = act.value;
+    if (act.value === "menu") opt.menu = { text: "", announce_text: "", options: [] };
+    if (act.value === "play") opt.then = "stay";
+    renderIvr();
+  };
+  const del = el("button", { type: "button", className: "small danger",
+    textContent: "🗑", onclick: () => { menu.options.splice(idx, 1); renderIvr(); } });
+  const fields = el("div", { className: "opt-fields" });
+  row.append(dig, act, fields, del);
+
+  const labelInput = () => {
+    const inp = el("input", { value: opt.label || "",
+      placeholder: "Підпис для анонсу (напр.: Графік роботи)" });
+    inp.oninput = () => { opt.label = inp.value; syncAnnounce(); };
+    return inp;
+  };
+  if (opt.action === "operator") {
+    const inp = el("input", { value: opt.connect_text || "",
+      placeholder: DEFAULT_CONNECT_TEXT });
+    inp.oninput = () => opt.connect_text = inp.value;
+    fields.append(frow(inp, prevBtn(() => inp.value || inp.placeholder)));
+  } else if (opt.action === "optout") {
+    const inp = el("input", { value: opt.confirm_text || "",
+      placeholder: DEFAULT_OPTOUT_TEXT });
+    inp.oninput = () => opt.confirm_text = inp.value;
+    fields.append(frow(inp, prevBtn(() => inp.value || inp.placeholder)));
+  } else if (opt.action === "play") {
+    const ta = el("textarea", { rows: 2, value: opt.text || "",
+      placeholder: "Текст фрази" });
+    ta.oninput = () => opt.text = ta.value;
+    const then = el("select", {});
+    Object.keys(THEN_UK).forEach(t => {
+      if (t === "back" && depth === 1) return;
+      then.append(el("option", { value: t, textContent: THEN_UK[t],
+                                 selected: opt.then === t }));
+    });
+    then.onchange = () => opt.then = then.value;
+    fields.append(frow(labelInput()), frow(ta, prevBtn(() => ta.value)), frow(then));
+  } else if (opt.action === "menu") {
+    fields.append(frow(labelInput()), renderLevel(opt.menu, depth + 1));
+  }
+  return row;
+}
 
 function collectIvr() {
   return {
-    operator: { enabled: $("opOperator").checked, connect_text: $("opConnectText").value },
-    repeat: { enabled: $("opRepeat").checked, max: parseInt($("opRepeatMax").value || "2", 10) },
-    optout: { enabled: $("opOptout").checked, confirm_text: $("opOptoutText").value },
-    menu_text: $("menuText").value,
     timeout_sec: parseInt($("timeoutSec").value || "5", 10),
-    on_timeout: "hangup",
+    max_repeats: parseInt($("maxRepeats").value || "2", 10),
+    menu: ivrMenu,
   };
 }
+renderIvr();
 
 // ---------- start campaign ----------
 $("startBtn").onclick = async () => {

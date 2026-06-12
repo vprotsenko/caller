@@ -75,7 +75,7 @@ class FakePool:
 
 
 FILES = {"main": "/a/main.wav", "menu": "/a/menu.wav",
-         "connecting": "/a/conn.wav", "optout_ok": "/a/opt.wav"}
+         "connect_1": "/a/conn.wav", "optout_ok_0": "/a/opt.wav"}
 
 FORM = {
     "operator": {"enabled": True, "connect_text": "Зачекайте"},
@@ -196,6 +196,59 @@ async def test_on_digit_callback_fires():
     session = FakeSession(digits=["0"])
     await ivr.run_flow(session, make_flow(), FILES, on_digit=seen.append)
     assert seen == ["0"]
+
+
+# --- nested menu tree (рекурсивна форма §15) ---------------------------------------
+
+TREE_FORM = {
+    "timeout_sec": 1,
+    "menu": {"options": [
+        {"digit": "1", "action": "operator"},
+        {"digit": "3", "action": "menu", "label": "Графік роботи", "menu": {
+            "text": "Працюємо з девʼятої до вісімнадцятої.",
+            "options": [
+                {"digit": "1", "action": "play", "label": "Субота",
+                 "text": "У суботу коротший день.", "then": "stay"},
+                {"digit": "9", "action": "back"},
+            ],
+        }},
+        {"digit": "0", "action": "optout"},
+    ]},
+}
+
+
+def make_tree():
+    flow = flow_mod.compile_form("Привіт", "F3", TREE_FORM)
+    files = {name: f"/a/{name}.wav" for name in flow["prompts"]}
+    return flow, files
+
+
+async def test_tree_walk_submenu_info_back_optout():
+    # 3 → підменю (текст рівня + анонс), 1 → фраза і назад у те ж меню,
+    # 9 → назад у корінь, 0 → відписка
+    flow, files = make_tree()
+    session = FakeSession(digits=["3", "1", "9", "0"])
+    outcome = await ivr.run_flow(session, flow, files)
+    assert session.played == [
+        "/a/main.wav", "/a/menu.wav",          # корінь: повідомлення + анонс
+        "/a/text_3.wav", "/a/menu_3.wav",      # вхід у підменю
+        "/a/info_3_1.wav", "/a/menu_3.wav",    # фраза, then=stay → той самий рівень
+        "/a/menu.wav",                         # назад: анонс кореня (без повтору msg)
+        "/a/optout_ok_0.wav",                  # відписка
+    ]
+    assert outcome["dtmf"] == "3190"
+    assert outcome["mark"] == "optout"
+    assert session.hung_up
+
+
+async def test_tree_deep_wandering_survives_step_guard():
+    # блукання туди-сюди по дереву легітимне: ліміт кроків росте з графом
+    # (10 раундів × 3 переходи + вхід/вихід = 34 кроки > старого MAX_STEPS=30)
+    flow, files = make_tree()
+    session = FakeSession(digits=["3", "9"] * 10 + ["0"])
+    outcome = await ivr.run_flow(session, flow, files)
+    assert outcome["mark"] == "optout"
+    assert outcome["dtmf"].endswith("0")
 
 
 # --- AMD step in run_call (§6, stage 4) -------------------------------------------

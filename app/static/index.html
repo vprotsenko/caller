@@ -15,9 +15,13 @@
   .row { display: flex; gap: 12px; flex-wrap: wrap; }
   .row > div { flex: 1; min-width: 140px; }
   label.fld { display: block; font-size: .82rem; font-weight: 600; margin: 8px 0 3px; }
-  .check { display:flex; align-items:flex-start; gap:8px; margin:8px 0; font-size:.9rem; }
-  .check input { margin-top:3px; }
-  .check .body { flex:1; }
+  .ivr-level { border-left: 3px solid #dbeafe; padding: 2px 0 2px 12px; margin: 6px 0; }
+  .opt-row { display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; margin:8px 0; padding:8px 10px; background:#f9fafb; border:1px solid #eef2f7; border-radius:8px; }
+  .opt-row > select { margin-top:2px; }
+  .opt-fields { flex:1; min-width:230px; }
+  .opt-fields input, .opt-fields textarea { width:100%; }
+  .frow { display:flex; gap:6px; align-items:flex-start; margin:3px 0; }
+  .frow > input, .frow > textarea { flex:1; }
   .val { font-weight: 600; color: #2563eb; }
   button { padding: 10px 18px; font: inherit; border: 0; border-radius: 6px; cursor: pointer; background:#e5e7eb; color:#1f2937; }
   button:disabled { background: #9ca3af !important; cursor: not-allowed; }
@@ -108,47 +112,18 @@
   <fieldset>
     <legend>IVR-меню</legend>
     <p class="hint">Що пропонувати абоненту після повідомлення. Без жодної опції —
-      просто програється повідомлення і дзвінок завершується.</p>
-
-    <label class="check">
-      <input type="checkbox" id="opOperator">
-      <span class="body">
-        <b>1 — оператор.</b> Зʼєднати з вільним оператором.
-        <input id="opConnectText" placeholder="Зачекайте, зʼєднуємо з оператором"
-               style="width:100%;margin-top:5px;display:none">
-        <button class="small" type="button" data-prev="opConnectText" style="margin-top:5px;display:none">▶</button>
-      </span>
-    </label>
-
-    <label class="check">
-      <input type="checkbox" id="opRepeat">
-      <span class="body">
-        <b>2 — повторити повідомлення</b>
-        <span id="repeatMaxWrap" style="display:none"> (до
-          <input id="opRepeatMax" type="number" min="1" max="5" value="2" style="width:54px"> разів)</span>
-      </span>
-    </label>
-
-    <label class="check">
-      <input type="checkbox" id="opOptout">
-      <span class="body">
-        <b>0 — відписатися.</b> Виключити номер із майбутніх повторів.
-        <input id="opOptoutText" placeholder="Вас видалено зі списку"
-               style="width:100%;margin-top:5px;display:none">
-        <button class="small" type="button" data-prev="opOptoutText" style="margin-top:5px;display:none">▶</button>
-      </span>
-    </label>
-
-    <div id="menuAnnounceWrap" style="display:none">
-      <label class="fld" for="menuText">Анонс меню (програється після повідомлення і на кожному повторі)</label>
-      <input id="menuText" placeholder="" style="width:100%">
-      <button class="small" type="button" data-prev="menuText" style="margin-top:5px">▶</button>
-    </div>
-
+      просто програється повідомлення і дзвінок завершується. Опція «підменю»
+      відкриває ще один рівень (до 4 загалом) зі своїм текстом і своїми опціями;
+      будь-який текст можна прослухати кнопкою ▶.</p>
+    <div id="ivrRoot"></div>
     <div class="row" id="menuTimeoutWrap" style="display:none">
       <div>
         <label class="fld" for="timeoutSec">Таймаут очікування цифри, c</label>
         <input id="timeoutSec" type="number" min="1" max="30" value="5">
+      </div>
+      <div>
+        <label class="fld" for="maxRepeats">Повторів анонсу</label>
+        <input id="maxRepeats" type="number" min="0" max="5" value="2">
       </div>
       <div>
         <label class="fld">Якщо нічого не натиснуто</label>
@@ -241,6 +216,7 @@
   </thead><tbody></tbody></table>
 </section>
 
-<script src="/static/app.js"></script>
+<!-- ?v= ламає вже закешовані копії app.js (нові відповіді йдуть з no-cache) -->
+<script src="/static/app.js?v=ivr-tree-1"></script>
 </body>
 </html>

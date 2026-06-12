@@ -20,7 +20,8 @@ from . import amd as amd_mod, esl
 logger = logging.getLogger(__name__)
 
 MAX_STEPS = 30          # node transitions per call: graph cycles are legal (§5),
-                        # infinite loops are not
+                        # infinite loops are not. For deep menu trees the real
+                        # cap scales with graph size — see run_flow()
 # Initial silence before the FIRST prompt (ms): the callee brings the phone to
 # their ear and the post-answer media renegotiation (jobs.media_reneg_after_answer)
 # completes. Prompts themselves carry no lead-in — see jobs.prerender_prompts.
@@ -154,7 +155,12 @@ class OutboundSession:
         if arg:
             headers["execute-app-arg"] = arg
         try:
-            reply = await self._sendmsg(headers)
+            # FS (принаймні цей білд) шле command/reply на sendmsg execute
+            # лише ПІСЛЯ завершення застосунку — разом із EXECUTE_COMPLETE.
+            # Тож reply-таймаут має покривати тривалість playback/PAGD, а не
+            # лише диспетчеризацію: з дефолтними 15 с будь-який промпт чи
+            # анонс+очікування довші за 15 с валили сесію TimeoutError'ом.
+            reply = await self._sendmsg(headers, timeout=timeout)
             if not reply.startswith("+OK"):
                 raise esl.ESLError(f"execute {app} refused: {reply}")
             return await asyncio.wait_for(done, timeout)
@@ -370,8 +376,11 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
                "bridge_attempted": False, "bridge_target": None}
     nodes = flow["nodes"]
     current = flow["start"]
+    # a human wandering a nested tree with «назад» legitimately makes many
+    # transitions, so the runaway guard grows with the graph
+    step_limit = max(MAX_STEPS, 5 * len(nodes))
     try:
-        for _ in range(MAX_STEPS):
+        for _ in range(step_limit):
             node = nodes[current]
             ntype = node["type"]
 
@@ -428,7 +437,7 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
                 await session.hangup()
                 return outcome
 
-        logger.warning("flow exceeded %d steps — hanging up (cycle guard)", MAX_STEPS)
+        logger.warning("flow exceeded %d steps — hanging up (cycle guard)", step_limit)
         await session.hangup()
     except CallEnded:
         logger.info("callee hung up mid-flow (cause=%s)", session.hangup_cause)
