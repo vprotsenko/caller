@@ -1,58 +1,78 @@
-# Dialer 2.0 (FreeSWITCH + ESL)
+# Dialer 2.0
 
-A commercial-grade autodialer: TTS messages (Supertonic, Ukrainian), IVR with
-DTMF, transfer to a live operator, AMD, full per-campaign statistics.
-The agent rules are [CLAUDE.md](CLAUDE.md).
+An outbound call-automation platform built on FreeSWITCH: voice campaigns with
+synthesized speech (Supertonic TTS, Ukrainian), interactive IVR menus driven by
+DTMF, transfer to live SIP operators, answering-machine detection (AMD), and
+full per-campaign reporting.
 
-**Status: stages 1–5 implemented** (PoC → IVR engine → operator/bridge → AMD →
-full UI with campaigns, history, profiles and operators + Ansible). Verification
-levels 1–4 pass; real calls/audio/AMD against live voicemail are level 5
-(a human with a phone on a Linux host).
+## Key features
 
-## Running
+- **Campaign dialing** — a list of numbers dialed with up to 5 concurrent
+  calls, live progress in the UI, durable per-number outcomes in SQLite.
+- **Text-to-speech** — Supertonic (Ukrainian by default) with voice, speed and
+  pause controls and instant audio preview.
+- **IVR constructor** — a visual form that builds menus of arbitrary nesting
+  (up to 4 levels); option actions: transfer to operator, replay, submenu,
+  play a message, back, home, opt-out, hang up.
+- **Operator transfer** — SIP softphone extensions (MicroSIP, Zoiper, …);
+  dialing pace adapts to the number of free registered operators.
+- **Answering-machine detection** — info campaigns leave the message after the
+  beep, operator campaigns hang up; a doubtful verdict is never dropped.
+- **Scenario library** — saved, editable campaign scenarios; a running
+  campaign keeps its own snapshot, so editing or deleting a scenario never
+  corrupts history.
+- **Campaign history** — per-number details, resume of interrupted campaigns,
+  retry of failed numbers (opted-out numbers are never redialed).
+- **Bilingual UI** — Ukrainian (canonical) and English.
+
+## Quick start
+
+Requirements: Docker + Docker Compose. Real calls additionally require a
+Linux host with a public IP and a SIP trunk (see
+[docs/deployment.md](docs/deployment.md)).
 
 ```bash
-cp .env.example .env      # fill in WEB_PASSWORD, ESL_PASSWORD, SIP_* (FlySIP)
-docker compose up --build # Linux host with a public IP (production mode)
+cp .env.example .env        # fill in WEB_PASSWORD, ESL_PASSWORD, SIP_*
+docker compose up --build
 ```
 
-UI: http://localhost:8000 (Basic Auth — `WEB_USER`/`WEB_PASSWORD` from `.env`).
-Three tabs: **Кампанія** (message + IVR form + dialing + live progress),
-**Налаштування** (SIP profiles + operators), **Історія** (campaigns,
-per-number details, resume/retry-failed).
+UI: http://localhost:8000 (Basic Auth — `WEB_USER` / `WEB_PASSWORD` from
+`.env`). Four tabs: **Кампанія** (message + IVR form + dialing + live
+progress), **Сценарії** (scenario library), **Налаштування** (SIP profiles +
+operators), **Історія** (campaigns, per-number details, resume/retry).
 
-## Real AMD (optional)
+To try the system without a SIP trunk, run an end-to-end loopback campaign —
+see [docs/testing.md](docs/testing.md).
 
-The base FreeSWITCH image does not include `mod_amd`; without it every answer
-is treated as HUMAN (the call is never dropped). For answering-machine
-classification:
+## Documentation
 
-```bash
-docker build -f Dockerfile.freeswitch -t caller-freeswitch:amd .  # fragile from-source build
-echo 'FREESWITCH_IMAGE=caller-freeswitch:amd' >> .env
-docker compose up -d
-```
+| Document | Contents |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Components, call lifecycle, data model, module map |
+| [docs/configuration.md](docs/configuration.md) | Full environment-variable reference |
+| [docs/api.md](docs/api.md) | REST API reference |
+| [docs/deployment.md](docs/deployment.md) | Production deployment (Ansible), AMD image, TLS |
+| [docs/operations.md](docs/operations.md) | Runbook: health checks, diagnostics, troubleshooting |
+| [docs/security.md](docs/security.md) | Secrets handling, network exposure, hardening checklist |
+| [docs/testing.md](docs/testing.md) | Verification levels, unit tests, loopback E2E |
+| [docs/development.md](docs/development.md) | Dev environment, conventions, invariants |
+| [ansible/README.md](ansible/README.md) | Playbook reference (deploy / call / status) |
 
 ## Verification
 
 ```bash
-# level 1: unit tests, no FreeSWITCH
-docker compose run --rm app pytest -q
-
-# levels 2-3: live containers and valid config
-docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "status"
-docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "sofia status"
-
-# level 4: E2E without a trunk (in .env: DIAL_STRING_TEMPLATE=loopback/{number}/default)
-#   start a campaign from the UI to number 9999; DTMF/AMD are simulated
-#   with uuid_recv_dtmf <a-leg> 1   and the amd_test_result originate variable
+docker compose run --rm app pytest -q                                        # unit tests
+docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "status"         # engine health
+docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "sofia status"   # trunk status
 ```
 
-Deployment and command-line control — [ansible/](ansible/) (deploy / call / status).
+The full verification ladder — from unit tests to a real call against live
+voicemail — is described in [docs/testing.md](docs/testing.md).
 
-## Secrets
+## Security
 
-`.env` and `data/` (SQLite with SIP and operator passwords in plaintext) are
-not committed and are protected by file permissions. The generated
-`fs/directory/default/*.xml` (operator passwords) are gitignored too. Basic
-Auth has no TLS — put a reverse proxy with TLS in front before production.
+`.env` and `data/` (the SQLite database holds SIP and operator credentials)
+are gitignored and must be protected by file permissions; generated FreeSWITCH
+XML with credentials is gitignored too. The built-in Basic Auth has no TLS —
+terminate TLS at a reverse proxy before exposing the UI. Details and the
+hardening checklist: [docs/security.md](docs/security.md).

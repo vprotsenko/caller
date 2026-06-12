@@ -2,17 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Two project lines — check the branch first
+## Project line
 
-- **`dialer-v2`** (this branch) — Dialer 2.0 on FreeSWITCH + ESL. This file
-  describes it.
-- **`main`** — dialer v1 (PJSIP, sequential dialing). The orphan branches are
-  **never merged** in either direction. The CLAUDE.md at the workspace root
-  (one level above the repository) describes v1 — its instructions about
-  PJSIP/pjsua2/pyVoIP do NOT apply to this branch.
-- v1 code is a source of patterns, not garbage: `git show main:app/tts.py`
-  (carried over almost as is), `db.py`/`main.py`/ansible are templates that
-  this branch follows.
+This repository is Dialer 2.0 (FreeSWITCH + ESL) only; the `dialer-v2` branch
+was merged into `main` (PR #1), so `main` is the current line. Dialer v1
+(PJSIP, sequential dialing) is a separate legacy project outside this
+repository — PJSIP/pjsua2/pyVoIP instructions do NOT apply here, and the v1
+project must not be modified from here. "Inherited from v1" in comments
+refers to patterns carried over from it (tts/db/main/ansible).
 
 ## What this is
 
@@ -23,6 +20,11 @@ a live SIP operator, AMD (answering-machine detection, voicemail drop), a
 library of saved scenarios, campaign history with resume/retry-failed. State
 lives in SQLite on a mounted volume. One campaign at a time, but up to
 `max_concurrent` (1..5) calls in flight.
+
+User-facing documentation lives in [docs/](docs/) (architecture,
+configuration, API, deployment, operations, security, testing, development).
+When a change alters behavior, config, or the API, update the matching
+docs/ page in the same change.
 
 ## Commands
 
@@ -134,8 +136,8 @@ A process restart marks the campaign `interrupted`; resume is explicit only
 - **Python 3.11, do not bump**: `tts.py` uses `audioop`, removed in 3.13.
 - **Audio: WAV 8000 Hz / mono / 16-bit** — IVR prompts and voicemail drop.
   `tts._verify` guarantees this — keep it.
-- **Secrets**: SIP passwords (plaintext in the DB — a deliberate POC
-  trade-off) and operator passwords are never returned by the API (only
+- **Secrets**: SIP passwords (plaintext in the DB — a documented limitation,
+  see docs/security.md) and operator passwords are never returned by the API (only
   `password_set`), never logged, never enter `/status`. `data/`, `.env`, the
   generated `fs/directory/default/*.xml` and
   `fs/sip_profiles/external/gw_*.xml` are secret and gitignored. Never commit
@@ -203,7 +205,7 @@ A process restart marks the campaign `interrupted`; resume is explicit only
 - **Prompts carry NO baked-in lead-in** (between menu rounds it reads as dead
   air); the single initial "bring the phone to your ear" pause is played by
   the IVR itself (`silence_stream`, `ivr.LEAD_IN_MS`). A lead-in inside the
-  WAV remains only on the PoC `&playback` path (`POST /call`).
+  WAV remains only on the ad-hoc single-call `&playback` path (`POST /call`).
 
 ## Gotchas: real calls (NAT/RTP/early media) — diagnosed painfully
 

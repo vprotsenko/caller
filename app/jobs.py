@@ -1,4 +1,4 @@
-"""Campaign worker + the stage-1 single-call PoC.
+"""Campaign worker + the ad-hoc single-call path.
 
 One campaign at a time (a second start gets a 409 upstream). The worker
 prerenders all flow prompts to WAV (hash cache — the campaign does not start
@@ -178,7 +178,7 @@ def _originate_vars(call_uuid):
 
 
 def build_originate_cmd(dial_string, wav_path, call_uuid):
-    """Stage-1 PoC shape: play one WAV to the callee once answered."""
+    """Ad-hoc single-call shape: play one WAV to the callee once answered."""
     return (f"originate {{{_originate_vars(call_uuid)}}}"
             f"{dial_string} &playback({wav_path})")
 
@@ -509,12 +509,12 @@ def snapshot():
         "total": counts["total"],
         "counts": counts,
         "current": current,
-        "operators": [],  # stage 3
+        "operators": [],  # filled by /status from live registrations
         "log": list(_active["log"]),
     }
 
 
-# --- stage-1 PoC: one ad-hoc call, no DB ----------------------------------------
+# --- ad-hoc single call, no DB ---------------------------------------------------
 
 async def call_once(client, number, wav_path, template=None):
     """Dial one number, play the WAV, return the outcome.

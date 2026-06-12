@@ -1,7 +1,9 @@
 # Ansible — deploying and operating Dialer 2.0
 
 The host is **Linux with a public IP** (a SIP/RTP requirement). Set it in
-[inventory.ini](inventory.ini).
+[inventory.ini](inventory.ini). The full deployment guide (requirements, TLS,
+AMD image, post-deploy checks) is [docs/deployment.md](../docs/deployment.md);
+this page is the playbook reference.
 `ansible.cfg` keeps one SSH connection for the whole playbook (ControlMaster)
 + pipelining — less overhead per task.
 
@@ -29,12 +31,12 @@ ansible-playbook deploy.yml
 #    For real AMD: build the image with mod_amd and point at it:
 ansible-playbook deploy.yml -e freeswitch_image=caller-freeswitch:amd
 
-# 2) Test campaign (Basic Auth creds are read from /opt/caller/.env)
+# Test campaign (Basic Auth creds are read from /opt/caller/.env)
 ansible-playbook call.yml \
   -e 'message=Добрий день! Це тест.' -e 'numbers=+380671234567' \
   -e campaign_type=operator -e ivr_operator=true
 
-# 3) Watch until completion
+# Watch until completion
 ansible-playbook status.yml -e wait=1
 ```
 

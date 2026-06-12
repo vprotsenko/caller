@@ -1,9 +1,9 @@
-"""FastAPI entry point — stages 1–2.
+"""FastAPI entry point.
 
 Routes (all behind HTTP Basic Auth, same scheme as v1):
   GET  /              -> static/index.html
   POST /preview       -> synthesize the message, return an audio URL
-  POST /call          -> stage-1 PoC: one ad-hoc call playing the message
+  POST /call          -> ad-hoc single call playing the message (no DB)
   POST /start         -> start a campaign (JSON body); 409 if one runs
   GET  /status        -> active-or-latest campaign snapshot
   GET  /audio/{name}  -> serve a synthesized WAV
@@ -19,7 +19,8 @@ History:
 
 WEB_PASSWORD comes from the environment; if unset, a random one is generated
 and logged so the app is never left open. NOTE: without TLS in front, Basic
-Auth credentials travel in cleartext (POC trade-off).
+Auth credentials travel in cleartext — terminate TLS at a reverse proxy in
+production (docs/security.md).
 """
 
 import asyncio
@@ -83,7 +84,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(dependencies=[Depends(require_auth)], lifespan=lifespan)
 
-_call_lock = asyncio.Lock()  # one ad-hoc PoC call at a time
+_call_lock = asyncio.Lock()  # one ad-hoc call at a time
 
 # Static assets are served by an explicit route (NOT app.mount): a mounted
 # sub-app would bypass the global require_auth dependency.
@@ -287,7 +288,7 @@ async def start(payload: dict = Body(...)):
 @app.get("/status")
 async def status():
     snap = jobs.snapshot()
-    # keep the stage-1 health info: is the engine reachable at all?
+    # engine health: is FreeSWITCH reachable at all?
     try:
         client = await esl.shared_client()
         st = await client.api("status")
@@ -315,7 +316,7 @@ async def _operator_states(client):
     return out
 
 
-# --- stage-1 PoC: one ad-hoc call -------------------------------------------------
+# --- ad-hoc single call (no campaign, no DB) ---------------------------------------
 
 @app.post("/call")
 async def call(
@@ -426,7 +427,7 @@ def _validate_profile(name, server, port, username):
     return None
 
 
-# --- Operators (stage 3) -----------------------------------------------------------
+# --- Operators ----------------------------------------------------------------------
 
 @app.get("/config/operators")
 async def list_operators():
