@@ -43,6 +43,24 @@ def test_compile_repeat_only():
     assert "optout" not in flow["nodes"]
 
 
+def test_compile_menu_gets_auto_announcement():
+    """Меню без анонсу = мертва тиша після повідомлення; компілятор зобов'язаний
+    додати промпт «menu» з автотекстом лише для увімкнених опцій."""
+    flow = flow_mod.compile_form("Привіт", "F3", FULL_FORM)
+    assert flow["nodes"]["menu"]["prompt"] == "menu"
+    assert flow["prompts"]["menu"]["text"] == flow_mod.menu_announcement(
+        True, True, True)
+
+    repeat_only = flow_mod.compile_form("Привіт", "F3", {"repeat": {"enabled": True}})
+    assert repeat_only["prompts"]["menu"]["text"] == flow_mod.MENU_REPEAT_TEXT
+
+
+def test_compile_menu_text_override():
+    form = dict(FULL_FORM, menu_text="Натисніть один або два.")
+    flow = flow_mod.compile_form("Привіт", "F3", form)
+    assert flow["prompts"]["menu"]["text"] == "Натисніть один або два."
+
+
 def test_compile_default_prompt_texts():
     flow = flow_mod.compile_form("Привіт", "F3", {
         "operator": {"enabled": True, "connect_text": "  "},

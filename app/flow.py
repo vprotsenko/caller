@@ -15,6 +15,24 @@ NODE_TYPES = ("play", "menu", "bridge", "hangup")
 
 DEFAULT_CONNECT_TEXT = "Зачекайте, з'єднуємо з оператором"
 DEFAULT_OPTOUT_TEXT = "Вас видалено зі списку"
+# Шматки автогенерованого анонсу меню (цифри словами — TTS читає їх надійніше,
+# ніж "1"/"0"). Без анонсу меню — мертва тиша: play_and_get_digits грає лише
+# silence_stream, і абонент не знає, що можна щось натиснути.
+MENU_OPERATOR_TEXT = "Щоб з'єднатися з оператором, натисніть один."
+MENU_REPEAT_TEXT = "Щоб прослухати повідомлення ще раз, натисніть два."
+MENU_OPTOUT_TEXT = "Щоб відписатися від дзвінків, натисніть нуль."
+
+
+def menu_announcement(operator=False, repeat=False, optout=False):
+    """Default menu announcement for the enabled options (UI mirrors this)."""
+    parts = []
+    if operator:
+        parts.append(MENU_OPERATOR_TEXT)
+    if repeat:
+        parts.append(MENU_REPEAT_TEXT)
+    if optout:
+        parts.append(MENU_OPTOUT_TEXT)
+    return " ".join(parts)
 
 
 class FlowError(ValueError):
@@ -64,9 +82,13 @@ def compile_form(message_text, voice, ivr=None):
                            "mark": "optout", "next": "bye"}
         branches["0"] = "optout"
 
+    menu_text = (ivr.get("menu_text") or "").strip() or menu_announcement(
+        operator.get("enabled"), repeat.get("enabled"), optout.get("enabled"))
+    prompts["menu"] = {"text": menu_text, "voice": voice}
     nodes["msg"] = {"type": "play", "prompt": "main", "next": "menu"}
     nodes["menu"] = {
         "type": "menu",
+        "prompt": "menu",
         "timeout_sec": timeout_sec,
         "max_repeats": max_repeats,
         "branches": branches,
@@ -101,7 +123,7 @@ def validate(flow):
         ntype = node.get("type")
         if ntype not in NODE_TYPES:
             raise FlowError(f"Вузол «{name}»: невідомий тип «{ntype}»")
-        if ntype in ("play", "bridge"):
+        if ntype in ("play", "bridge", "menu"):
             prompt = node.get("prompt")
             if prompt and prompt not in prompts:
                 raise FlowError(f"Вузол «{name}»: немає промпта «{prompt}»")

@@ -132,7 +132,7 @@ UI — **параметризована форма** (рівень 1, рішен
   "start": "msg",
   "nodes": {
     "msg":    {"type": "play",   "prompt": "main", "next": "menu"},
-    "menu":   {"type": "menu",   "timeout_sec": 5, "max_repeats": 2,
+    "menu":   {"type": "menu",   "prompt": "menu", "timeout_sec": 5, "max_repeats": 2,
                "branches": {"1": "to_op", "2": "msg", "0": "optout"},
                "on_timeout": "bye"},
     "to_op":  {"type": "bridge", "prompt": "connecting"},
@@ -141,6 +141,7 @@ UI — **параметризована форма** (рівень 1, рішен
   },
   "prompts": {
     "main":       {"text": "<повідомлення>", "voice": "F3"},
+    "menu":       {"text": "Щоб з'єднатися з оператором, натисніть один. ...", "voice": "F3"},
     "connecting": {"text": "Зачекайте, з'єднуємо з оператором", "voice": "F3"},
     "optout_ok":  {"text": "Вас видалено зі списку", "voice": "F3"}
   }
@@ -148,6 +149,11 @@ UI — **параметризована форма** (рівень 1, рішен
 ```
 
 - Типи вузлів першої версії: `play`, `menu`, `bridge`, `hangup`.
+- `menu.prompt` — анонс опцій; програється на КОЖНОМУ раунді очікування
+  цифри (без нього абонент чує мертву тишу — play_and_get_digits грає лише
+  silence_stream). Компілятор (`app/flow.py`) генерує текст автоматично з
+  увімкнених опцій (`menu_announcement`, цифри словами); форма може
+  перекрити його полем `ivr.menu_text` (§15).
 - На старті кампанії всі `prompts` пререндеряться у WAV (кеш за
   hash(text+voice), каталог `audio/`); кампанія не стартує, якщо синтез
   упав.
@@ -313,11 +319,15 @@ git show main:ansible/deploy.yml        # деплой-патерн: .env чер
     "operator": {"enabled": true,  "connect_text": "Зачекайте, з'єднуємо з оператором"},
     "repeat":   {"enabled": true,  "max": 2},
     "optout":   {"enabled": false, "confirm_text": ""},
+    "menu_text": "",
     "timeout_sec": 5,
     "on_timeout": "hangup"
   }
 }
 ```
+
+`menu_text` — необовʼязковий анонс меню; порожній → сервер генерує текст з
+увімкнених опцій (`flow.menu_announcement`).
 
 Відповіді: `200 {"campaign_id": 7}`; `409 {"detail": "campaign already
 running"}`; `400` з описом помилки валідації (номери, IVR-форма, синтез).

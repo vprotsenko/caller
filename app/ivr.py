@@ -372,11 +372,16 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
                 current = node["next"]
 
             elif ntype == "menu":
-                if node.get("prompt"):
-                    await session.play(prompt_files[node["prompt"]])
                 branch = None
-                # max_repeats = how many extra waiting rounds after the first
+                # max_repeats = how many extra waiting rounds after the first.
+                # The announcement replays on EVERY round: without it the
+                # repeat rounds are dead air (play_and_get_digits only plays
+                # silence_stream) and the callee hangs up. Digits pressed
+                # during the announcement are queued and picked up right after
+                # (wait_digit drains the DTMF queue first).
                 for _attempt in range(int(node.get("max_repeats", 0)) + 1):
+                    if node.get("prompt"):
+                        await session.play(prompt_files[node["prompt"]])
                     digit = await session.wait_digit(int(node["timeout_sec"]))
                     if digit is None:
                         continue

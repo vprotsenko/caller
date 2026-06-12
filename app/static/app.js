@@ -59,9 +59,19 @@ function bindToggle(cb, ...els) {
   const sync = () => els.forEach(e => e.style.display = cb.checked ? "" : "none");
   cb.onchange = () => { sync(); syncMenuTimeout(); }; sync();
 }
+// Дзеркало flow.menu_announcement (сервер — джерело правди): плейсхолдер
+// показує автотекст, який буде синтезовано, якщо поле лишити порожнім.
+const MENU_TEXTS = {
+  opOperator: "Щоб з'єднатися з оператором, натисніть один.",
+  opRepeat: "Щоб прослухати повідомлення ще раз, натисніть два.",
+  opOptout: "Щоб відписатися від дзвінків, натисніть нуль.",
+};
 function syncMenuTimeout() {
   const any = $("opOperator").checked || $("opRepeat").checked || $("opOptout").checked;
   $("menuTimeoutWrap").style.display = any ? "" : "none";
+  $("menuAnnounceWrap").style.display = any ? "" : "none";
+  $("menuText").placeholder = Object.keys(MENU_TEXTS)
+    .filter(id => $(id).checked).map(id => MENU_TEXTS[id]).join(" ");
 }
 bindToggle($("opOperator"), $("opConnectText"), document.querySelector('[data-prev=opConnectText]'));
 bindToggle($("opRepeat"), $("repeatMaxWrap"));
@@ -73,6 +83,7 @@ function collectIvr() {
     operator: { enabled: $("opOperator").checked, connect_text: $("opConnectText").value },
     repeat: { enabled: $("opRepeat").checked, max: parseInt($("opRepeatMax").value || "2", 10) },
     optout: { enabled: $("opOptout").checked, confirm_text: $("opOptoutText").value },
+    menu_text: $("menuText").value,
     timeout_sec: parseInt($("timeoutSec").value || "5", 10),
     on_timeout: "hangup",
   };

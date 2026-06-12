@@ -72,7 +72,8 @@ class FakePool:
         return f"user/{ext}@test.domain"
 
 
-FILES = {"main": "/a/main.wav", "connecting": "/a/conn.wav", "optout_ok": "/a/opt.wav"}
+FILES = {"main": "/a/main.wav", "menu": "/a/menu.wav",
+         "connecting": "/a/conn.wav", "optout_ok": "/a/opt.wav"}
 
 FORM = {
     "operator": {"enabled": True, "connect_text": "Зачекайте"},
@@ -90,7 +91,8 @@ def make_flow(form=FORM):
 async def test_timeout_plays_message_and_hangs_up():
     session = FakeSession(digits=[])  # nobody presses anything
     outcome = await ivr.run_flow(session, make_flow(), FILES)
-    assert session.played == ["/a/main.wav"]
+    # анонс меню звучить на кожному з 3 раундів очікування (max_repeats=2)
+    assert session.played == ["/a/main.wav", "/a/menu.wav", "/a/menu.wav", "/a/menu.wav"]
     assert session.hung_up
     assert outcome["dtmf"] == ""
     assert outcome["mark"] is None
@@ -99,7 +101,8 @@ async def test_timeout_plays_message_and_hangs_up():
 async def test_press_2_replays_message():
     session = FakeSession(digits=["2"])
     outcome = await ivr.run_flow(session, make_flow(), FILES)
-    assert session.played == ["/a/main.wav", "/a/main.wav"]  # replayed once
+    assert session.played.count("/a/main.wav") == 2  # replayed once
+    assert session.played[:3] == ["/a/main.wav", "/a/menu.wav", "/a/main.wav"]
     assert outcome["dtmf"] == "2"
     assert session.hung_up
 
@@ -171,7 +174,7 @@ async def test_repeats_exhausted_goes_to_on_timeout():
 
 async def test_callee_hangup_mid_flow_returns_partial_outcome():
     session = FakeSession(digits=["2"])
-    session.die_after_plays = 1  # dies on the replay
+    session.die_after_plays = 2  # dies on the replay (after main + menu)
     outcome = await ivr.run_flow(session, make_flow(), FILES)
     assert outcome["dtmf"] == "2"
     assert not session.hung_up  # the callee hung up, not us
