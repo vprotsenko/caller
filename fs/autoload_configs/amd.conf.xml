@@ -1,7 +1,7 @@
 <configuration name="amd.conf" description="Answering Machine Detection">
-  <!-- mod_amd дефолти; пороги тюнингуються на реальних автовідповідачах
-       (Plan.md §11, етап 4) — підібрані значення задокументувати тут.
-       initial_silence/greeting/after_greeting_silence — у мілісекундах. -->
+  <!-- mod_amd defaults; thresholds get tuned on real answering machines
+       (stage 4) — document the chosen values here.
+       initial_silence/greeting/after_greeting_silence are in milliseconds. -->
   <settings>
     <param name="initial_silence" value="2500"/>
     <param name="greeting" value="1500"/>

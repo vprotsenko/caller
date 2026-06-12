@@ -1,6 +1,6 @@
 """ESL wire protocol + InboundClient against an in-process fake FreeSWITCH.
 
-No real FreeSWITCH needed (Plan.md §16 level 1).
+No real FreeSWITCH needed (verification level 1).
 """
 
 import asyncio

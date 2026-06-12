@@ -1,4 +1,4 @@
-"""SIP trunk gateways generated from DB profiles (Plan.md §3, §8 — stage 5).
+"""SIP trunk gateways generated from DB profiles (stage 5).
 
 The web UI stores SIP trunks in `sip_profile`, but FreeSWITCH dials through a
 `gateway` in the external sofia profile. This module materializes a DB profile

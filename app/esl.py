@@ -1,11 +1,11 @@
 """Minimal asyncio ESL (FreeSWITCH Event Socket Layer) inbound client.
 
-Decision (Plan.md §13): the default candidate `greenswitch` is gevent-based and
+Decision: the default candidate `greenswitch` is gevent-based and
 cannot share a process with the uvicorn/asyncio loop that serves the API, so
 v2 uses this hand-rolled client instead. The wire protocol is plain text
 (RFC822-style headers, an optional Content-Length payload, frames separated by
 a blank line), small enough to implement directly and unit-test without a live
-FreeSWITCH (Plan.md §16 level 1).
+FreeSWITCH.
 
 Inbound mode only (connect to FreeSWITCH :8021, auth, send commands, receive
 events). The outbound-socket server that drives the IVR per answered call is

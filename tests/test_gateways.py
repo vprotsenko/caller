@@ -1,4 +1,4 @@
-"""Trunk gateway generation from DB profiles (Plan.md §3/§8; §16 level 1)."""
+"""Trunk gateway generation from DB profiles (verification level 1)."""
 
 import os
 

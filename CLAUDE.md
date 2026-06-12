@@ -1,143 +1,256 @@
-# CLAUDE.md — Дзвонилка 2.0 (гілка `dialer-v2`)
+# CLAUDE.md
 
-Цей файл — для агента, що працює на гілці `dialer-v2`.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Стан: етапи 1–5 §11 реалізовані й закомічені** (PoC → IVR → оператор → AMD →
-повний UI + Ansible). Перевірені рівні §16 1–4 (137 pytest, живі контейнери,
-loopback-E2E, UI у headless-браузері); рівень 5 (реальні дзвінки/аудіо/AMD на
-живій пошті, NAT/RTP на бойовому хості) — за людиною з телефоном. Подальша
-робота — рівень 5, фаза 6 (§11: `mod_callcenter`, predictive, запис, Sippy)
-або правки за фідбеком.
+## Two project lines — check the branch first
 
-## Головне
+- **`dialer-v2`** (this branch) — Dialer 2.0 on FreeSWITCH + ESL. This file
+  describes it.
+- **`main`** — dialer v1 (PJSIP, sequential dialing). The orphan branches are
+  **never merged** in either direction. The CLAUDE.md at the workspace root
+  (one level above the repository) describes v1 — its instructions about
+  PJSIP/pjsua2/pyVoIP do NOT apply to this branch.
+- v1 code is a source of patterns, not garbage: `git show main:app/tts.py`
+  (carried over almost as is), `db.py`/`main.py`/ansible are templates that
+  this branch follows.
 
-- **Технічне завдання — [Plan.md](Plan.md). Це основний документ.** Прочитай
-  його повністю перед будь-якою роботою: архітектура, схема БД, формат
-  IVR-сценарію (§5), життєвий цикл дзвінка (§6), API-контракти (§15), етапи з
-  критеріями приймання (§11). Реалізація ведеться строго за ним; відхилення —
-  тільки з обґрунтуванням і фіксацією у Plan.md.
-- Це **orphan-гілка**: новий проєкт на FreeSWITCH + ESL з нуля. Стара
-  дзвонилка (PJSIP) живе на гілці `main` і **не мерджиться** сюди ні в який бік.
-- **CLAUDE.md у корені воркспейсу (на рівень вище репозиторію) описує старий
-  проєкт з `main`.** Його інструкції про PJSIP/pjsua2, pyVoIP, збірку PJSIP у
-  Dockerfile тощо до цієї гілки НЕ застосовуються. Діють тільки правила,
-  продубльовані тут і в Plan.md.
+## What this is
 
-## Код v1 — джерело, а не сміття
+A commercial-grade autodialer: web UI (Basic Auth) → a campaign dials a list
+of numbers with a synthesized message (Supertonic TTS, Ukrainian by default),
+IVR menus of arbitrary nesting (up to 4 levels) reacting to DTMF, transfer to
+a live SIP operator, AMD (answering-machine detection, voicemail drop), a
+library of saved scenarios, campaign history with resume/retry-failed. State
+lives in SQLite on a mounted volume. One campaign at a time, but up to
+`max_concurrent` (1..5) calls in flight.
 
-Робоче дерево порожнє, але v1 лежить на `main` цього ж репо. Перед написанням
-будь-якого модуля перевір Plan.md §14: `app/tts.py` переноситься як є
-(`git show main:app/tts.py`), `db.py` / `main.py` / `index.html` / ansible —
-зразки патернів, які треба наслідувати, а не переписувати з нуля.
-
-## Незмінні константи (успадковані від v1, перевірені болем)
-
-- **Python 3.11, не бампати**: `tts.py` використовує `audioop`, видалений у 3.13.
-- **Аудіо: WAV 8000 Hz / mono / 16-bit** — і для промптів IVR, і для
-  voicemail-drop. `tts.py` має `_verify`, який це гарантує — зберегти.
-- **Секрети**: SIP-паролі і паролі операторів ніколи не повертаються
-  API-клієнту (тільки `password_set`), не логуються, не потрапляють у
-  `/status`. `data/` (SQLite) і `.env` — секретні. `.gitignore` вже їх
-  виключає — не комітити їх ні за яких умов.
-- **`network_mode: host`** для FreeSWITCH; реальні дзвінки працюють тільки на
-  Linux із публічним IP. На macOS (машина розробки) UI/preview/loopback-тести
-  працюють, реальне аудіо — ні. Це не баг твого коду.
-- **event_socket слухає тільки 127.0.0.1**, пароль з `.env`.
-
-## Ґотчі, виявлені на етапі 1
-
-- **`X-PRE-PROCESS` розуміє ТІЛЬКИ подвійні лапки** навколо атрибутів:
-  з одинарними сканер мовчки дає порожні значення (`$${var}` → ""). Тому в
-  shell-командах `exec-set` у `fs/vars.xml` немає внутрішніх лапок і `&&`
-  (XML-entity `&amp;` теж не декодується) — тільки `if/then/fi` і
-  `${VAR:-default}`.
-- **macOS-оверрайд ділить netns** (`app` має
-  `network_mode: service:freeswitch`): після `docker compose restart
-  freeswitch` старий netns руйнується і app втрачає ESL/порт 8000 —
-  перезапускати треба обидва (`down` + `up`). На Linux (host network) цього
-  ефекту немає.
-- **`fs_cli` всередині контейнера** потребує `-p "$ESL_PASSWORD"` (дефолтний
-  ClueCon не підійде).
-
-## Ґотчі, виявлені на етапі 2
-
-- **Loopback-канали не генерують подій `DTMF`** — чекати на DTMF-події в
-  outbound-сесії марно (на loopback тести §16 ніколи не пройдуть). Меню
-  читає цифри через `play_and_get_digits` (споживає вхідну чергу каналу,
-  працює і на loopback, і на реальних SIP-дзвінках). Симуляція цифри в
-  тестах: `uuid_recv_dtmf <a-leg-uuid> <цифра>` — `uuid_send_dtmf` натомість
-  ШЛЕ цифру в бік віддаленої сторони, це інше.
-- **macOS-оверрайд**: `docker compose restart app` — безпечний (netns
-  freeswitch живе далі), а от рестарт freeswitch вимагає підняти обидва.
-
-## Ґотчі, виявлені на етапі 3
-
-- **Supertonic не приймає типографську пунктуацію** (U+02BC український
-  апостроф у «зʼєднати», «», — , …) і кидає `unsupported character`.
-  `jobs.normalize_text` мапить їх в ASCII перед синтезом — застосовується і в
-  `/preview`, і у пререндері промптів. Не прибирати.
-- **Вільність оператора — наживо `sofia_contact`**, а не події реєстрації
-  (нотатка в Plan.md §7).
-- **E2E bridge на loopback** (§16): щоб місток не падав з
-  `INCOMPATIBLE_DESTINATION`, обидві ноги треба прибити до спільного кодека —
-  env `ORIGINATE_EXTRA_VARS=absolute_codec_string=PCMA` (loopback-нога) +
-  `BRIDGE_EXTRA_VARS=absolute_codec_string=PCMA` (нога оператора). У проді
-  порожні — транк домовляється сам. Тестовий «оператор» — самозареєстрований
-  gateway (`fs/sip_profiles/external/test_*.xml`) + dialplan-заглушка
-  (`fs/dialplan/public/test_*.xml`, answer→sleep→hangup), обидва gitignored.
-
-## Ґотчі реальних дзвінків (рівень 5, бойовий Linux-хост) — діагностовано боляче
-
-Послідовність провалів на шляху «дзвінок іде, але аудіо нема»; усе виправлене —
-тримати, не відкочувати. Діагностика: `mod_logfile` + `sip-trace=yes` на
-external (без них база `safarov` стартує з `-nf` і логів дзвінків НЕМА), плюс
-`tcpdump` на хості — рахувати RTP-пакети по напрямках.
-
-- **Профіль з UI ≠ gateway.** Воркер дзвонив через статичний `flysip` з `.env`
-  (порожній → NORMAL_TEMPORARY_FAILURE). `app/gateways.py` матеріалізує
-  `sip_profile` у `fs/sip_profiles/external/gw_profile_<id>.xml` + rescan;
-  `DIAL_STRING_TEMPLATE` має містити `{gw}` (compose-дефолт перекривав код).
-- **CALL_REJECTED `403 Auth Failed`** на зареєстрованому транку = бік
-  провайдера (провіжн/Caller-ID), не баг. `CALLER_ID_NUMBER` env існує.
-- **Одностороння тиша #1 — STUN.** `ext-rtp-ip="auto"` тягне STUN, який на
-  хмарі визначив чужий IP (`5.9.9.9`) і поклав у SDP. Дефолт тепер
-  `$${local_ip_v4}` (реальний IP інтерфейсу); справжній NAT — `EXTERNAL_IP`.
-- **Одностороння тиша #2 — `a=sendonly` early media + `ignore_early_media`.**
-  FlySIP шле 183 з `a=sendonly` (ringback); FreeSWITCH защёлкує медіа recvonly
-  і не перемикає на sendrecv після 200 OK — ми приймаємо, але не передаємо
-  (tcpdump: 0 вихідних). `ignore_early_media=true` ОБОВ'ЯЗКОВИЙ (інакше
-  `&socket()` стартує на Pre-Answer і грає в ringback), а recvonly лікується
-  **`uuid_media_reneg` (re-INVITE) одразу після відповіді** (`MEDIA_RENEG_ON_ANSWER`,
-  jobs.py) — провайдер перевідповідає реальною медіа-адресою+sendrecv. 2 c
-  lead-in тиші у WAV прикривають реузгодження. `disable-hold=true` на профілі
-  теж лишити.
-- **Перевірка успіху:** `tcpdump -ni any 'udp and host <trunk-media-ip> and
-  greater 120'` має показати симетричний потік (наш src:port ↔ їх dst:port,
-  однакові порти). Якщо симетрично і реальне PCMA йде, а абонент мовчить — це
-  **провіжн акаунта у провайдера**, не наш код.
-
-## Команди
+## Commands
 
 ```bash
-docker compose build        # freeswitch + app
-docker compose up           # UI на http://localhost:8000 (Basic Auth: WEB_USER/WEB_PASSWORD з .env)
-pytest                      # юніт-тести логіки, без FreeSWITCH
-docker compose exec freeswitch fs_cli -x "status"   # здоров'я движка
+cp .env.example .env        # WEB_PASSWORD, ESL_PASSWORD, SIP_* (FlySIP)
+docker compose up --build   # production mode: Linux host with a public IP
+
+# local development on macOS (UI/preview/loopback; real calls do NOT work)
+docker compose -f docker-compose.yml -f docker-compose.macos.yml up --build
+
+docker compose run --rm app pytest -q              # unit tests, no FreeSWITCH
+docker compose run --rm app pytest tests/test_flow.py -q   # one file
+docker compose run --rm app pytest -k announce -q           # by pattern
+
+docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "status"        # health
+docker compose exec freeswitch fs_cli -p "$ESL_PASSWORD" -x "sofia status"  # trunks
 ```
+
+UI: http://localhost:8000. E2E without a trunk: set
+`DIAL_STRING_TEMPLATE=loopback/{number}/default` in `.env`, run a campaign to
+number 9999; digits are simulated with `uuid_recv_dtmf <a-leg-uuid> <digit>`,
+the AMD verdict with the `amd_test_result` originate variable.
+
+Real AMD is optional: the base FreeSWITCH image lacks `mod_amd` (without it
+every answer = HUMAN, the call is never dropped — graceful degradation).
+Build: `docker build -f Dockerfile.freeswitch -t caller-freeswitch:amd .` +
+`FREESWITCH_IMAGE=caller-freeswitch:amd` in `.env`.
+
+Deploy ([ansible/](ansible/), host in `inventory.ini`):
+
+| What changed | Playbook |
+|---|---|
+| Python code in `app/` | `redeploy-app.yml` (~10-30 s, FreeSWITCH stays up) |
+| `fs/` config | `reload-fs.yml` (reloadxml + rescan, no container restart) |
+| `fs/modules.conf` or sofia profile params | `reload-fs.yml -e hard=1` (FS restart — `rescan` does NOT apply profile params) |
+| Everything / requirements / first time | `deploy.yml` |
+
+`call.yml` POSTs `/start` (Basic Auth creds are read from `/opt/caller/.env`),
+`status.yml -e wait=1` waits for completion.
+
+## Architecture
+
+Two containers (`network_mode: host` on Linux): **freeswitch** (the engine;
+config is static XML from [fs/](fs/), mounted read-only; credentials are
+injected by `fs/vars.xml` from env) and **app** (FastAPI controller + static
+UI). The controller talks to FreeSWITCH over two ESL channels:
+
+- **inbound** ([app/esl.py](app/esl.py)) — hand-rolled asyncio client to :8021
+  (greenswitch was rejected: gevent is incompatible with the asyncio loop).
+  `originate`, health checks, events; one shared connection, lazy,
+  re-established on drop.
+- **outbound socket** ([app/ivr.py](app/ivr.py)) — server on 127.0.0.1:8084.
+  Every answered call is originated with `&socket(... async full)`, FS opens a
+  TCP connection here, and `OutboundSession` drives the call (playback,
+  `play_and_get_digits`, bridge, AMD).
+
+Campaign lifecycle: `POST /start` ([app/main.py](app/main.py)) → validation +
+dry-run compilation of the IVR form → a `campaign` row with snapshots of the
+compiled graph (`ivr_flow`) and the source form (`ivr_form`) → the worker
+([app/jobs.py](app/jobs.py)) prerenders all prompts to WAV (cache keyed by
+hash of text+voice+params; a campaign must not start half-mute), materializes
+the SIP profile into a gateway ([app/gateways.py](app/gateways.py) →
+`fs/sip_profiles/external/gw_profile_<id>.xml` + rescan), then keeps up to
+`max_concurrent` calls in flight: `claim_next_pending` → originate → the
+answer is picked up by an outbound session, which finds its
+`ivr.CallContext` in `REGISTRY` by `origination_uuid` → `run_call`: AMD →
+lead-in silence → graph interpretation. Each number's outcome is written to
+SQLite immediately.
+
+- **[app/flow.py](app/flow.py)** — compiler of the recursive IVR form (UI/API)
+  into flat `play|menu|bridge|hangup` nodes + validator. Option actions:
+  `operator|replay|menu|play|back|home|optout|hangup`. The old flat form
+  (checkboxes, sent by `call.yml`) is converted by `_legacy_menu`. Pure
+  functions — fully covered by pytest.
+- **[app/db.py](app/db.py)** — SQLite (WAL, one connection + lock). Tables:
+  `sip_profile`, `operator`, `scenario`, `campaign`, `campaign_number`.
+  `scenario` stores the FORM (round-trips through the editor), not the graph —
+  compilation happens at start; a campaign keeps a snapshot, so deleting a
+  scenario does not corrupt history.
+- **[app/operators.py](app/operators.py)** — operator extensions: XML in
+  `fs/directory/default/` + `reloadxml`; availability is checked live with
+  `sofia_contact` (not registration events). `OperatorPool` paces dialing in
+  operator campaigns by the number of free registered operators.
+- **[app/amd.py](app/amd.py)** — pure policy: MACHINE → an info campaign drops
+  the message after the beep (`voicemail-left`), an operator campaign hangs up
+  (`machine-hangup`); HUMAN/NOTSURE → normal flow (a doubtful call is never
+  dropped).
+- **[app/tts.py](app/tts.py)** — Supertonic (lazy model, synthesis serialized
+  by `_gen_lock`) + resample to telephony format via `audioop`.
+- UI — [app/static/index.html](app/static/index.html) +
+  [app/static/app.js](app/static/app.js), tabs Кампанія / Сценарії /
+  Налаштування / Історія; `/status` is polled every 1.5 s. The UI is
+  bilingual (uk/en): Ukrainian is canonical in the markup and JS literals;
+  the `EN` map in app.js translates the chrome, `trServer`/`trLog` map the
+  Ukrainian server messages by pattern, and the toggle persists in
+  `localStorage` (`lang`). The backend stays Ukrainian-only.
+
+### Number statuses
+
+`pending → ringing →` one of: `answered`, `transferred` (connected to an
+operator), `missed-operator` (wanted an operator, never got bridged),
+`optout`, `voicemail-left`, `machine-hangup`, `busy` (USER_BUSY), `no-answer`
+(NO_ANSWER/ORIGINATOR_CANCEL/NO_USER_RESPONSE), `failed` (everything else).
+Retry-failed takes `db.RETRYABLE`; **`optout` is NEVER redialed**. A `failed`
+with CALL_REJECTED/403 on a registered trunk = the provider's side
+(provisioning/Caller-ID — there is a `CALLER_ID_NUMBER` env), not an app bug.
+A process restart marks the campaign `interrupted`; resume is explicit only
+(it places real calls).
+
+## Invariants (inherited from v1, verified through pain)
+
+- **Python 3.11, do not bump**: `tts.py` uses `audioop`, removed in 3.13.
+- **Audio: WAV 8000 Hz / mono / 16-bit** — IVR prompts and voicemail drop.
+  `tts._verify` guarantees this — keep it.
+- **Secrets**: SIP passwords (plaintext in the DB — a deliberate POC
+  trade-off) and operator passwords are never returned by the API (only
+  `password_set`), never logged, never enter `/status`. `data/`, `.env`, the
+  generated `fs/directory/default/*.xml` and
+  `fs/sip_profiles/external/gw_*.xml` are secret and gitignored. Never commit
+  them under any circumstances.
+- **`network_mode: host`** for FreeSWITCH; real calls work only on Linux with
+  a public IP. On macOS UI/preview/loopback work, real audio does not. This is
+  not a bug in your code.
+- **event_socket listens on 127.0.0.1 only**, password from `.env`.
+- **Ukrainian stays canonical**: spoken TTS content (`flow.DIGIT_WORDS`,
+  `ANNOUNCE_TEMPLATES`, `DEFAULT_*_TEXT`) is ALWAYS Ukrainian — callees hear
+  it regardless of the UI language. Server-side strings (API errors,
+  `_log(...)` lines) stay Ukrainian; English happens only client-side via the
+  `EN` map / `trServer` / `trLog` in app.js. A new UI string must be added to
+  the `EN` map (and, for server messages, a pattern to `SERVER_RE`/`LOG_RE`),
+  or English mode silently shows Ukrainian. Code comments/docstrings are
+  English.
+
+## Gotchas: FreeSWITCH config and Docker
+
+- **`X-PRE-PROCESS` understands ONLY double quotes** around attributes: with
+  single quotes the scanner silently yields empty values. Hence the `exec-set`
+  shell commands in `fs/vars.xml` contain no inner quotes and no `&&` (the
+  XML entity `&amp;` is not decoded either) — only `if/then/fi` and
+  `${VAR:-default}`.
+- **The macOS override shares a netns** (`app` has
+  `network_mode: service:freeswitch`): `docker compose restart app` is safe,
+  but restarting freeswitch destroys the netns and app loses ESL/port 8000 —
+  bring both up (`down` + `up`). No such effect on Linux.
+- **`fs_cli` inside the container** needs `-p "$ESL_PASSWORD"`.
+- Call diagnostics: `mod_logfile` + `sip-trace=yes` on the external profile
+  (without them the safarov image starts with `-nf` and there are NO call
+  logs), plus `tcpdump` on the host — count RTP packets per direction.
+
+## Gotchas: ESL / outbound session / DTMF
+
+- **The command/reply to `sendmsg execute` arrives AFTER the application
+  finishes** (together with CHANNEL_EXECUTE_COMPLETE), at least on this FS
+  build. Hence the reply timeout in `OutboundSession.execute` equals the
+  execution timeout: with the default 15 s, any prompt or PAGD round longer
+  than 15 s killed the session with a TimeoutError → `failed/APP_TIMEOUT`.
+- **Loopback channels emit no `DTMF` events** — menus read digits via
+  `play_and_get_digits` (consumes the channel input queue; works on loopback
+  and on real calls). The `self.dtmf` event queue is deliberately NOT
+  consulted: a digit arrives both as an event and in the channel queue, and
+  reading both sources counted one press twice.
+- **The announcement goes INSIDE PAGD as its file** (not a separate playback)
+  — a digit barges in mid-word and acts immediately; a separate playback is
+  not interruptible.
+- Simulating a digit in tests: `uuid_recv_dtmf <a-leg-uuid> <digit>`
+  (`uuid_send_dtmf` instead sends the digit to the remote side — different
+  thing). Digits queued BEFORE PAGD starts are eaten by playback — send when
+  `play_and_get_digits` is already running on the a-leg (the `application`
+  column in `show channels`).
+- `api` commands on the outbound socket are limited; `module_exists mod_amd`
+  is probed once over the inbound connection (`jobs.amd_available`).
+
+## Gotchas: TTS (Supertonic)
+
+- **Typographic punctuation kills synthesis** (`unsupported character`):
+  U+02BC Ukrainian apostrophe «зʼєднати», guillemets, em dashes, … —
+  `jobs.normalize_text` maps them to ASCII before synthesis (both in
+  `/preview` and in prerender). Do not remove.
+- **Speed above ~1.3 SILENTLY swallows words** (measured: 1.4 → 3 of 5
+  sentences, 2.0 → 2), below 0.7 — ValueError. Do not widen
+  `tts.SPEED_MIN/MAX` without re-measuring.
+- `max_chunk_length=10` in synthesize: "one sentence — one chunk", otherwise
+  `silence_duration` (the inter-sentence pause) has no effect.
+- Digits in menu announcements are words (`flow.DIGIT_WORDS`): TTS reads them
+  more reliably than "1"/"0".
+- **Prompts carry NO baked-in lead-in** (between menu rounds it reads as dead
+  air); the single initial "bring the phone to your ear" pause is played by
+  the IVR itself (`silence_stream`, `ivr.LEAD_IN_MS`). A lead-in inside the
+  WAV remains only on the PoC `&playback` path (`POST /call`).
+
+## Gotchas: real calls (NAT/RTP/early media) — diagnosed painfully
+
+The chain of failures behind "the call goes through but there is no audio";
+all fixed — keep, do not roll back:
+
+- **A UI profile ≠ a gateway**: without materialization (`app/gateways.py`)
+  the call goes through the static `flysip` from `.env` (empty →
+  NORMAL_TEMPORARY_FAILURE). `DIAL_STRING_TEMPLATE` must contain `{gw}`.
+- **One-way silence #1 — STUN**: `ext-rtp-ip="auto"` pulls in STUN, which on a
+  cloud host detected a foreign IP and put it into the SDP. The default in
+  `fs/vars.xml` is `$${local_ip_v4}`; for real NAT set `EXTERNAL_IP` in `.env`.
+- **One-way silence #2 — `a=sendonly` early media (FlySIP) + FS 1.10.12 bug**:
+  FS latches smode=RECVONLY from the second 183 and silently drops all
+  outbound RTP, and `a=sendrecv` in the 200 OK never resets smode. The cure is
+  a **two-phase re-INVITE** (`jobs.media_reneg_after_answer`): #1 plain (the
+  sendonly answer sets smode=SENDONLY — the write gate opens), #2 with a
+  one-shot `origination_audio_mode=sendrecv` (the SDP contract is two-way
+  again). The pause between them is `MEDIA_RENEG_PAUSE` (1 s, otherwise 491);
+  the IVR's initial silence covers them. On healthy trunks both are no-ops.
+  ONE re-INVITE does not cure it; `disable-hold` has no effect on this bug.
+- **`ignore_early_media=true` is REQUIRED** — otherwise `&socket()` starts on
+  Pre-Answer (183) and the IVR plays into the ringback before pickup.
+- **Verifying success**: `tcpdump -ni any 'udp and host <trunk-media-ip> and
+  greater 120'` — a symmetric flow (our src:port ↔ their dst:port). If RTP is
+  symmetric and the callee hears nothing — it's account provisioning on the
+  provider side, not our code.
+- **E2E bridge on loopback**: to keep the bridge from failing with
+  INCOMPATIBLE_DESTINATION — `ORIGINATE_EXTRA_VARS=absolute_codec_string=PCMA`
+  + `BRIDGE_EXTRA_VARS=absolute_codec_string=PCMA` (empty in production).
+  The test "operator" is a self-registered gateway + a dialplan stub
+  (`fs/sip_profiles/external/test_*.xml`, `fs/dialplan/public/test_*.xml`,
+  both gitignored).
 
 ## Definition of done
 
-Етап вважається закритим за критеріями Plan.md §11, але **тільки в межах
-рівнів 1–4 перевірки з §16** (pytest, живі контейнери, валідний конфіг,
-loopback-E2E). Рівень 5 (реальний дзвінок, аудіо, AMD на живій голосовій
-пошті) виконує людина — у звіті про етап явно розділяй «перевірено мною» і
-«потребує перевірки людиною з телефоном». Не заявляй неперевірене
-перевіреним.
-
-## Порядок роботи
-
-Етапи §11 строго по черзі: 1 (PoC originate+playback) → 2 (IVR-движок) →
-3 (оператор/bridge) → 4 (AMD) → 5 (повний UI). Не починати наступний, поки
-попередній не пройшов рівні 1–4 §16. Рішення «за замовчуванням» — у §13;
-якщо одне з них ламається об реальність (наприклад, `greenswitch`
-непридатний) — зафіксуй заміну в Plan.md одним реченням і йди далі.
+Verification levels: 1 — pytest; 2-3 — live containers + valid config
+(`fs_cli status` / `sofia status`); 4 — loopback E2E (DTMF/AMD simulated);
+5 — **a real call/audio/AMD against live voicemail — done by a human with a
+phone on a Linux host**. In reports explicitly separate "verified by me"
+(1-4) from "needs verification by a human" (5). Never claim the unverified as
+verified.

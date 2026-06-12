@@ -1,19 +1,19 @@
-<!-- Єдиний SIP-профіль: вихідні дзвінки через gateway (FlySIP) + реєстрації
-     операторських софтфонів (етап 3). Обрізаний vanilla external (без TLS —
-     POC-трейдоф, Plan.md §12). -->
+<!-- The single SIP profile: outbound calls through a gateway (FlySIP) +
+     registrations of operator softphones (stage 3). Trimmed-down vanilla
+     external (no TLS — a POC trade-off). -->
 <profile name="external">
   <gateways>
     <X-PRE-PROCESS cmd="include" data="external/*.xml"/>
   </gateways>
 
   <settings>
-    <!-- sip-trace=yes: SIP-обмін із транком пишеться в лог (діагностика
-         реальних дзвінків — точна причина 4xx-відмов провайдера). Можна
-         вимкнути на yes→no, коли дзвінки стабільні. -->
+    <!-- sip-trace=yes: the SIP exchange with the trunk is written to the log
+         (diagnostics of real calls — the exact cause of the provider's 4xx
+         rejections). Can be switched yes→no once calls are stable. -->
     <param name="debug" value="0"/>
     <param name="sip-trace" value="yes"/>
     <param name="sip-capture" value="no"/>
-    <!-- DTMF тільки RFC2833 (events у RTP) — IVR-меню етапу 2 живиться цим -->
+    <!-- DTMF via RFC2833 only (events in RTP) — the stage 2 IVR menu feeds on this -->
     <param name="rfc2833-pt" value="101"/>
     <param name="dtmf-type" value="rfc2833"/>
     <param name="dtmf-duration" value="2000"/>
@@ -30,20 +30,21 @@
     <param name="rtp-timer-name" value="soft"/>
     <param name="rtp-timeout-sec" value="300"/>
     <param name="rtp-hold-timeout-sec" value="1800"/>
-    <!-- НЕ трактувати a=sendonly/inactive як «утримання» (hold). FlySIP шле
-         a=sendonly у ранньому медіа (ringback), через що FreeSWITCH глушив наш
-         передавальний напрямок (recvonly) і повідомлення не доходило. З
-         disable-hold медіа лишається sendrecv після відповіді. -->
+    <!-- Do NOT treat a=sendonly/inactive as hold. FlySIP sends
+         a=sendonly in early media (ringback), which made FreeSWITCH mute our
+         sending direction (recvonly) so the message never got through. With
+         disable-hold the media stays sendrecv after the answer. -->
     <param name="disable-hold" value="true"/>
 
     <param name="manage-presence" value="false"/>
     <param name="nonce-ttl" value="60"/>
-    <!-- вихідний транк: вхідні INVITE не автентифікуємо (їх і не очікуємо
-         ззовні; реєстрації операторів — етап 3, там auth-calls переглянеться) -->
+    <!-- outbound trunk: inbound INVITEs are not authenticated (we don't expect
+         them from outside anyway; operator registrations are stage 3, where
+         auth-calls will be revisited) -->
     <param name="auth-calls" value="false"/>
 
-    <!-- NAT: ext-* = публічний IP з .env (EXTERNAL_IP) або auto.
-         Перше, що ламається на реальному дзвінку — перевіряти одразу (§12). -->
+    <!-- NAT: ext-* = public IP from .env (EXTERNAL_IP) or auto.
+         The first thing that breaks on a real call — check it right away. -->
     <param name="rtp-ip" value="$${local_ip_v4}"/>
     <param name="sip-ip" value="$${local_ip_v4}"/>
     <param name="ext-rtp-ip" value="$${external_ip}"/>

@@ -11,6 +11,6 @@ __pycache__/
 *.wav
 .pytest_cache/
 -creds.txt
-# Test-only dialplan stubs (loopback operator simulation, §16)
+# Test-only dialplan stubs (loopback operator simulation)
 fs/dialplan/public/test_*.xml
 fs/sip_profiles/external/test_*.xml

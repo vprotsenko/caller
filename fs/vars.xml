@@ -1,29 +1,30 @@
 <include>
-  <!-- Телефонія: лише кодеки PCMA/PCMU (Plan.md §3). -->
+  <!-- Telephony: PCMA/PCMU codecs only. -->
   <X-PRE-PROCESS cmd="set" data="global_codec_prefs=PCMA,PCMU"/>
   <X-PRE-PROCESS cmd="set" data="outbound_codec_prefs=PCMA,PCMU"/>
   <X-PRE-PROCESS cmd="set" data="external_sip_port=5080"/>
   <X-PRE-PROCESS cmd="set" data="internal_sip_port=5060"/>
   <X-PRE-PROCESS cmd="set" data="domain=$${local_ip_v4}"/>
 
-  <!-- Значення з .env: exec-set виконує shell-команду і кладе stdout у
-       змінну препроцесора. УВАГА: сканер X-PRE-PROCESS розуміє ТІЛЬКИ
-       подвійні лапки навколо атрибутів (одинарні мовчки дають порожнє
-       значення), тому всередині shell-команд лапок немає. Паролі приходять
-       з env і не комітяться. -->
+  <!-- Values from .env: exec-set runs a shell command and puts its stdout into
+       a preprocessor variable. WARNING: the X-PRE-PROCESS scanner understands
+       ONLY double quotes around attributes (single quotes silently yield an
+       empty value), so there are no quotes inside the shell commands. Passwords
+       come from env and are not committed. -->
   <X-PRE-PROCESS cmd="exec-set" data="esl_password=printf %s $ESL_PASSWORD"/>
 
-  <!-- IP, який FreeSWITCH рекламує в SDP (ext-rtp-ip/ext-sip-ip).
-       Дефолт = $${local_ip_v4} (реальний IP інтерфейсу) — для хоста з ПУБЛІЧНИМ
-       IP це і є правильний публічний IP. НЕ "auto": auto вмикає STUN, який на
-       хмарних хостах часто визначає чужий IP (бачили 5.9.9.9 → одностороння
-       тиша). За справжнім NAT — задай EXTERNAL_IP у .env (публічний IP).
-       Препроцесор розкриває $${local_ip_v4} ДО запуску shell, тож fallback
-       коректний. (Plan.md §12: NAT/RTP — перше, що ламається.) -->
+  <!-- The IP FreeSWITCH advertises in SDP (ext-rtp-ip/ext-sip-ip).
+       Default = $${local_ip_v4} (the real interface IP) — for a host with a
+       PUBLIC IP this is exactly the right public IP. NOT "auto": auto enables
+       STUN, which on cloud hosts often resolves someone else's IP (we saw
+       5.9.9.9 → one-way silence). Behind real NAT — set EXTERNAL_IP in .env
+       (the public IP). The preprocessor expands $${local_ip_v4} BEFORE the
+       shell runs, so the fallback is correct. (NAT/RTP is the
+       first thing that breaks.) -->
   <X-PRE-PROCESS cmd="exec-set" data="external_ip=printf %s ${EXTERNAL_IP:-$${local_ip_v4}}"/>
 
-  <!-- Перший gateway (FlySIP) з .env. Без кредів gateway піднімається з
-       заглушками і не реєструється — досить для §16 рівня 3. -->
+  <!-- First gateway (FlySIP) from .env. Without creds the gateway comes up
+       with placeholders and does not register — enough for verification level 3. -->
   <X-PRE-PROCESS cmd="exec-set" data="sip_gw_server=printf %s ${SIP_SERVER:-sip.invalid}"/>
   <X-PRE-PROCESS cmd="exec-set" data="sip_gw_port=printf %s ${SIP_PORT:-5060}"/>
   <X-PRE-PROCESS cmd="exec-set" data="sip_gw_username=printf %s ${SIP_USER:-anonymous}"/>

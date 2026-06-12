@@ -1,4 +1,4 @@
-"""SQLite persistence (Plan.md §4): SIP profiles, operators, campaigns,
+"""SQLite persistence: SIP profiles, operators, campaigns,
 per-number outcomes.
 
 Patterns inherited from v1: one file on a mounted volume (DB_DIR), one shared
@@ -24,17 +24,17 @@ logger = logging.getLogger(__name__)
 DB_DIR = os.environ.get("DB_DIR", "/app/data")
 DB_PATH = os.path.join(DB_DIR, "caller.db")
 
-# campaign.status values (Plan.md §4)
+# campaign.status values
 RUNNING = "running"
 CAMPAIGN_STATUSES = ("running", "done", "interrupted", "stopped")
 
-# campaign_number.status values (Plan.md §4)
+# campaign_number.status values
 NUMBER_STATUSES = (
     "pending", "ringing", "answered", "transferred", "voicemail-left",
     "machine-hangup", "no-answer", "busy", "failed", "optout",
     "missed-operator",
 )
-# eligible for retry-failed; optout is NEVER retried (Plan.md §8)
+# eligible for retry-failed; optout is NEVER retried
 RETRYABLE = ("failed", "busy", "no-answer", "machine-hangup", "missed-operator")
 # still in flight — neither pending nor terminal
 ACTIVE_STATUSES = ("ringing",)
@@ -60,21 +60,37 @@ CREATE TABLE IF NOT EXISTS operator (
     created_at  REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scenario (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL UNIQUE,
+    campaign_type TEXT NOT NULL DEFAULT 'info',
+    message_text  TEXT NOT NULL,
+    voice         TEXT NOT NULL,
+    voice_params  TEXT NOT NULL DEFAULT '{}',  -- JSON {speed, steps, silence}
+    ivr_form      TEXT NOT NULL DEFAULT '{}',  -- JSON of the RECURSIVE FORM, not the compiled graph:
+                                               -- the editor round-trips it; compilation happens at start
+    created_at    REAL NOT NULL,
+    updated_at    REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS campaign (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     name           TEXT NOT NULL,
     status         TEXT NOT NULL,           -- running|done|interrupted|stopped
-    campaign_type  TEXT NOT NULL DEFAULT 'info',  -- info|operator (AMD branch, §6)
+    campaign_type  TEXT NOT NULL DEFAULT 'info',  -- info|operator (AMD branch)
     message_text   TEXT NOT NULL,
     voice          TEXT NOT NULL,
-    ivr_flow       TEXT NOT NULL,           -- JSON snapshot of the scenario (§5)
+    ivr_flow       TEXT NOT NULL,           -- flow JSON snapshot of the scenario
     profile_id     INTEGER REFERENCES sip_profile(id) ON DELETE SET NULL,
     profile_label  TEXT,                    -- for history display if the profile is gone
     max_concurrent INTEGER NOT NULL DEFAULT 1,
     error          TEXT,                    -- why the campaign stopped, if abnormal
     created_at     REAL NOT NULL,
     started_at     REAL,
-    finished_at    REAL
+    finished_at    REAL,
+    scenario_id    INTEGER,                 -- which scenario it was started from (may be NULL)
+    scenario_name  TEXT,                    -- name snapshot: survives scenario deletion
+    ivr_form       TEXT                     -- snapshot of the source form for editing from history
 );
 
 CREATE TABLE IF NOT EXISTS campaign_number (
@@ -105,9 +121,23 @@ def _connect():
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA foreign_keys=ON")
         _conn.executescript(_SCHEMA)
+        _migrate(_conn)
         _conn.commit()
         logger.info("SQLite ready at %s", DB_PATH)
     return _conn
+
+
+def _migrate(conn):
+    """Lightweight in-place migrations: CREATE TABLE IF NOT EXISTS covers new
+    tables, this covers columns added to existing ones on old DBs."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaign)")}
+    for col, ddl in (
+        ("scenario_id", "ALTER TABLE campaign ADD COLUMN scenario_id INTEGER"),
+        ("scenario_name", "ALTER TABLE campaign ADD COLUMN scenario_name TEXT"),
+        ("ivr_form", "ALTER TABLE campaign ADD COLUMN ivr_form TEXT"),
+    ):
+        if col not in cols:
+            conn.execute(ddl)
 
 
 def init(seed_profile=None):
@@ -261,20 +291,91 @@ def delete_operator(operator_id):
         conn.commit()
 
 
+# --- Scenarios (saved campaign variants; the source for starting) ---------------
+
+def scenario_dict(row):
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "campaign_type": row["campaign_type"],
+        "message": row["message_text"],
+        "voice": row["voice"],
+        "voice_params": json.loads(row["voice_params"] or "{}"),
+        "ivr": json.loads(row["ivr_form"] or "{}"),
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_scenarios():
+    """Full scenario dicts (they are small): the list and the start select are
+    fed by a single query; the UI computes the menu digest itself from `ivr`."""
+    with _lock:
+        rows = _connect().execute("SELECT * FROM scenario ORDER BY name").fetchall()
+    return [scenario_dict(r) for r in rows]
+
+
+def get_scenario(scenario_id):
+    if scenario_id is None:
+        return None
+    with _lock:
+        row = _connect().execute(
+            "SELECT * FROM scenario WHERE id=?", (scenario_id,)).fetchone()
+    return scenario_dict(row) if row else None
+
+
+def create_scenario(name, campaign_type, message_text, voice, voice_params, ivr_form):
+    with _lock:
+        conn = _connect()
+        now = time.time()
+        cur = conn.execute(
+            "INSERT INTO scenario (name, campaign_type, message_text, voice,"
+            " voice_params, ivr_form, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (name, campaign_type, message_text, voice,
+             json.dumps(voice_params, ensure_ascii=False),
+             json.dumps(ivr_form, ensure_ascii=False), now, now),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def update_scenario(scenario_id, name, campaign_type, message_text, voice,
+                    voice_params, ivr_form):
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "UPDATE scenario SET name=?, campaign_type=?, message_text=?, voice=?,"
+            " voice_params=?, ivr_form=?, updated_at=? WHERE id=?",
+            (name, campaign_type, message_text, voice,
+             json.dumps(voice_params, ensure_ascii=False),
+             json.dumps(ivr_form, ensure_ascii=False), time.time(), scenario_id),
+        )
+        conn.commit()
+
+
+def delete_scenario(scenario_id):
+    with _lock:
+        conn = _connect()
+        conn.execute("DELETE FROM scenario WHERE id=?", (scenario_id,))
+        conn.commit()
+
+
 # --- Campaigns -----------------------------------------------------------------
 
 def create_campaign(name, campaign_type, message_text, voice, ivr_flow,
-                    profile_id, profile_label, max_concurrent, numbers):
+                    profile_id, profile_label, max_concurrent, numbers,
+                    scenario_id=None, scenario_name=None, ivr_form=None):
     """Insert the campaign + one row per number; status starts as 'running'."""
     with _lock:
         conn = _connect()
         cur = conn.execute(
             "INSERT INTO campaign (name, status, campaign_type, message_text, voice,"
-            " ivr_flow, profile_id, profile_label, max_concurrent, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " ivr_flow, profile_id, profile_label, max_concurrent, created_at,"
+            " scenario_id, scenario_name, ivr_form)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name, RUNNING, campaign_type, message_text, voice,
              json.dumps(ivr_flow, ensure_ascii=False), profile_id, profile_label,
-             int(max_concurrent), time.time()),
+             int(max_concurrent), time.time(), scenario_id, scenario_name,
+             json.dumps(ivr_form, ensure_ascii=False) if ivr_form is not None else None),
         )
         cid = cur.lastrowid
         conn.executemany(
@@ -422,7 +523,8 @@ def list_campaigns(limit=50):
     with _lock:
         rows = _connect().execute(
             "SELECT id, name, status, campaign_type, voice, profile_id, profile_label,"
-            " max_concurrent, error, created_at, started_at, finished_at"
+            " max_concurrent, error, created_at, started_at, finished_at,"
+            " scenario_id, scenario_name"
             " FROM campaign ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
     out = []

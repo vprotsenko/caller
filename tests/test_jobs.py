@@ -1,4 +1,4 @@
-"""Pure call-logic helpers: numbers, dial strings, cause mapping (§16 level 1)."""
+"""Pure call-logic helpers: numbers, dial strings, cause mapping (verification level 1)."""
 
 import asyncio
 
@@ -94,10 +94,10 @@ def test_originate_vars_no_caller_id_when_unset(monkeypatch):
     ({}, "answered"),
     # optout wins: the caller asked out even if an operator was reached
     ({"mark": "optout", "transferred": True}, "optout"),
-    # wanted an operator but never got bridged -> missed-operator (§6)
+    # wanted an operator but never got bridged -> missed-operator
     ({"bridge_attempted": True, "transferred": False}, "missed-operator"),
     ({"bridge_attempted": True, "transferred": True}, "transferred"),
-    # AMD terminal actions win over everything (§6)
+    # AMD terminal actions win over everything
     ({"amd_action": "voicemail"}, "voicemail-left"),
     ({"amd_action": "machine_hangup"}, "machine-hangup"),
     ({"amd_action": "voicemail", "mark": "optout"}, "voicemail-left"),
@@ -107,7 +107,7 @@ def test_outcome_status(outcome, expected):
 
 
 def test_normalize_text_typographic_punctuation():
-    # Supertonic rejects U+02BC (український апостроф) та типографські знаки
+    # Supertonic rejects U+02BC (the Ukrainian apostrophe) and typographic marks
     assert jobs.normalize_text("зʼєднати") == "з'єднати"
     assert jobs.normalize_text("з’єднати") == "з'єднати"
     assert jobs.normalize_text("«Привіт» — сказав він…") == '"Привіт" - сказав він...'
@@ -120,9 +120,14 @@ def test_prompt_path_is_cache_key(tmp_path, monkeypatch):
     assert a == jobs.prompt_path("Привіт", "F3")      # stable
     assert a != jobs.prompt_path("Привіт!", "F3")     # text changes the key
     assert a != jobs.prompt_path("Привіт", "M1")      # voice changes the key
+    # generation parameters are part of the key too, otherwise changing the
+    # speed would serve the old WAV from the cache
+    assert a != jobs.prompt_path("Привіт", "F3", speed=1.5)
+    assert a != jobs.prompt_path("Привіт", "F3", steps=16)
+    assert a != jobs.prompt_path("Привіт", "F3", silence=1.0)
 
 
-# --- hangup cause -> status (Plan.md §6) -----------------------------------------
+# --- hangup cause -> status -------------------------------------------------------
 
 @pytest.mark.parametrize("cause,answered,expected", [
     ("NORMAL_CLEARING", True, "answered"),
@@ -193,6 +198,28 @@ async def test_call_once_no_answer(tmp_path):
     client = StubClient("-ERR ORIGINATOR_CANCEL")
     result = await jobs.call_once(client, "+380671234567", str(wav))
     assert result["status"] == "no-answer"
+
+
+async def test_media_reneg_after_answer_two_phase(monkeypatch):
+    """Reneg #1 is plain (opens the FS write gate via the trunk's sendonly
+    answer); reneg #2 offers sendrecv via the one-shot origination_audio_mode
+    override (restores the two-way SDP contract). Order matters."""
+    monkeypatch.setattr(jobs, "MEDIA_RENEG_PAUSE", 0)
+    client = StubClient("+OK")
+    await jobs.media_reneg_after_answer(client, "uuid-1")
+    assert client.killed == [
+        "uuid_media_reneg uuid-1",
+        "uuid_setvar uuid-1 origination_audio_mode sendrecv",
+        "uuid_media_reneg uuid-1",
+    ]
+
+
+async def test_media_reneg_after_answer_swallows_errors():
+    class BrokenClient:
+        async def api(self, cmd, timeout=None):
+            raise RuntimeError("ESL down")
+
+    await jobs.media_reneg_after_answer(BrokenClient(), "uuid-1")  # must not raise
 
 
 def make_silence_wav(path, seconds=0.1, rate=8000):

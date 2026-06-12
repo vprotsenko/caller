@@ -1,4 +1,4 @@
-"""AMD decision policy (Plan.md §6; §16 level 1)."""
+"""AMD decision policy (verification level 1)."""
 
 import pytest
 
@@ -26,7 +26,7 @@ def test_normalize_verdict(raw, expected):
     # human / notsure: always continue, regardless of campaign type
     ("HUMAN", "info", amd.CONTINUE),
     ("HUMAN", "operator", amd.CONTINUE),
-    ("NOTSURE", "info", amd.CONTINUE),       # doubtful -> not dropped (§6)
+    ("NOTSURE", "info", amd.CONTINUE),       # doubtful -> not dropped
     ("NOTSURE", "operator", amd.CONTINUE),
     ("", "info", amd.CONTINUE),
 ])

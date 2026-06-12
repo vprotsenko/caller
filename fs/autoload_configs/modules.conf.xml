@@ -1,27 +1,27 @@
 <configuration name="modules.conf" description="Modules">
   <modules>
     <!-- logging: console (stdout) + logfile (/var/log/freeswitch/freeswitch.log)
-         для діагностики реальних дзвінків — base safarov-образ стартує з -nf,
-         тож без mod_logfile історія дзвінків ніде не зберігається. -->
+         for diagnosing real calls — the base safarov image starts with -nf,
+         so without mod_logfile call history is not stored anywhere. -->
     <load module="mod_console"/>
     <load module="mod_logfile"/>
     <!-- core API + ESL -->
     <load module="mod_commands"/>
     <load module="mod_event_socket"/>
-    <!-- SIP + тестовий loopback-ендпойнт (§16 рівень 4) -->
+    <!-- SIP + test loopback endpoint (verification level 4) -->
     <load module="mod_sofia"/>
     <load module="mod_loopback"/>
-    <!-- dialplan + аплікації (playback, park, bridge...) -->
+    <!-- dialplan + applications (playback, park, bridge...) -->
     <load module="mod_dialplan_xml"/>
     <load module="mod_dptools"/>
-    <!-- аудіо: WAV-файли + тон/тиша -->
+    <!-- audio: WAV files + tone/silence -->
     <load module="mod_sndfile"/>
     <load module="mod_tone_stream"/>
-    <!-- AMD (етап 4): mod_avmd — детекція біпа голосової пошти; mod_amd —
-         класифікація HUMAN/MACHINE. mod_amd є лише в образі
-         caller-freeswitch:amd (Dockerfile.freeswitch); у базовому safarov-образі
-         його нема — завантаження дасть НЕфатальне попередження, а контролер
-         трактує відповідь як HUMAN (не скидає дзвінок). -->
+    <!-- AMD (stage 4): mod_avmd — voicemail beep detection; mod_amd —
+         HUMAN/MACHINE classification. mod_amd exists only in the
+         caller-freeswitch:amd image (Dockerfile.freeswitch); the base safarov
+         image lacks it — loading yields a NON-fatal warning, and the controller
+         treats the answer as HUMAN (does not hang up the call). -->
     <load module="mod_avmd"/>
     <load module="mod_amd"/>
   </modules>

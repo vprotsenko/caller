@@ -1,9 +1,9 @@
 ---
-# ШВИДКИЙ редеплой ЛИШЕ контролера (app) — для змін у Python-коді.
-# Не чіпає FreeSWITCH (sofia/gateway/реєстрації лишаються живими). ~10-30 c.
+# FAST redeploy of ONLY the controller (app) — for Python code changes.
+# Does not touch FreeSWITCH (sofia/gateways/registrations stay alive). ~10-30 s.
 #   cd caller/ansible && ansible-playbook redeploy-app.yml
-# Якщо мінявся requirements.txt — теж спрацює (--build перезбере залежності).
-# Зміни конфігу FreeSWITCH (fs/) цей плейбук НЕ застосовує — для них reload-fs.yml.
+# If requirements.txt changed, this works too (--build rebuilds the dependencies).
+# This playbook does NOT apply FreeSWITCH config (fs/) changes — use reload-fs.yml for those.
 - name: Fast redeploy (app only)
   hosts: caller
   gather_facts: false
@@ -59,4 +59,4 @@
 
     - name: Done
       ansible.builtin.debug:
-        msg: "app оновлено; FreeSWITCH ESL: {{ health.json.esl_connected | default('?') }}"
+        msg: "app updated; FreeSWITCH ESL: {{ health.json.esl_connected | default('?') }}"

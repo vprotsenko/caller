@@ -1,4 +1,4 @@
-"""Operator directory generation + pool logic (§16 level 1)."""
+"""Operator directory generation + pool logic (verification level 1)."""
 
 import pytest
 

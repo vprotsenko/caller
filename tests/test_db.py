@@ -1,5 +1,5 @@
 """SQLite layer: counters, retry set, optout protection, interrupted marking
-(§16 level 1). Runs on a throwaway DB file per test."""
+(verification level 1). Runs on a throwaway DB file per test."""
 
 import pytest
 
@@ -104,3 +104,85 @@ def test_active_campaign_id():
     db.set_campaign_status(cid, "done", finished=True)
     assert db.active_campaign_id() is None
     assert db.latest_campaign_id() == cid
+
+
+# --- scenarios (the library of saved campaign variants) ----------------------------
+
+IVR_FORM = {"timeout_sec": 5, "max_repeats": 2,
+            "menu": {"options": [{"digit": "1", "action": "operator"}]}}
+VP = {"speed": 1.1, "steps": 8, "silence": 0.3}
+
+
+def make_scenario(name="Акція"):
+    return db.create_scenario(name, "info", "Привіт", "F3", VP, IVR_FORM)
+
+
+def test_scenario_roundtrip():
+    sid = make_scenario()
+    s = db.get_scenario(sid)
+    assert s["name"] == "Акція"
+    assert s["message"] == "Привіт"
+    assert s["voice_params"] == VP
+    assert s["ivr"] == IVR_FORM          # the API form, not the compiled graph
+
+
+def test_scenario_list_sorted_and_full():
+    make_scenario("Б")
+    make_scenario("А")
+    names = [s["name"] for s in db.list_scenarios()]
+    assert names == ["А", "Б"]
+    assert all("ivr" in s for s in db.list_scenarios())  # UI digest derives from ivr
+
+
+def test_scenario_unique_name():
+    make_scenario("Те саме")
+    import pytest as _pytest
+    with _pytest.raises(Exception):
+        make_scenario("Те саме")
+
+
+def test_scenario_update_and_delete():
+    sid = make_scenario()
+    db.update_scenario(sid, "Нова назва", "operator", "Текст 2", "M1",
+                       {"speed": 0.9}, {"menu": {"options": []}})
+    s = db.get_scenario(sid)
+    assert (s["name"], s["campaign_type"], s["voice"]) == ("Нова назва", "operator", "M1")
+    db.delete_scenario(sid)
+    assert db.get_scenario(sid) is None
+
+
+def test_campaign_keeps_scenario_snapshot():
+    """The scenario name in a campaign is a snapshot: it survives the
+    scenario's deletion."""
+    sid = make_scenario()
+    pid = db.create_profile("t2", "sip.example", 5060, "u", "pw", True)
+    cid = db.create_campaign("К", "info", "Привіт", "F3", FLOW, pid, "u@s", 1,
+                             ["+380670000001"], scenario_id=sid,
+                             scenario_name="Акція", ivr_form=IVR_FORM)
+    db.delete_scenario(sid)
+    c = db.get_campaign(cid)
+    assert c["scenario_name"] == "Акція"
+    import json as _json
+    assert _json.loads(c["ivr_form"]) == IVR_FORM
+    assert any(x["scenario_name"] == "Акція" for x in db.list_campaigns())
+
+
+def test_campaign_migration_adds_columns(tmp_path):
+    """An old DB without the scenario columns migrates on the fly (ALTER TABLE)."""
+    import sqlite3
+    db.close()
+    old = sqlite3.connect(db.DB_PATH)
+    old.execute("""CREATE TABLE campaign (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+        status TEXT NOT NULL, campaign_type TEXT NOT NULL DEFAULT 'info',
+        message_text TEXT NOT NULL, voice TEXT NOT NULL, ivr_flow TEXT NOT NULL,
+        profile_id INTEGER, profile_label TEXT,
+        max_concurrent INTEGER NOT NULL DEFAULT 1, error TEXT,
+        created_at REAL NOT NULL, started_at REAL, finished_at REAL)""")
+    old.execute("INSERT INTO campaign (name, status, campaign_type, message_text,"
+                " voice, ivr_flow, created_at) VALUES ('стара','done','info','м','F3','{}',1.0)")
+    old.commit()
+    old.close()
+    c = db.get_campaign(1)  # _connect() → _migrate()
+    assert c["name"] == "стара"
+    assert c["scenario_id"] is None and c["scenario_name"] is None

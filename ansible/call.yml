@@ -1,7 +1,7 @@
 ---
-# Запустити тестову кампанію через розгорнутий застосунок (запит біжить на
-# сервері). Веб Basic Auth береться з {{ app_dir }}/.env. SIP-профіль —
-# дефолтний у БД (засіяний із SIP_* при першому старті) або вкажи -e profile_id.
+# Start a test campaign through the deployed app (the request runs on the
+# server). Web Basic Auth is taken from {{ app_dir }}/.env. The SIP profile is
+# the default one in the DB (seeded from SIP_* on first start), or pass -e profile_id.
 #
 #   ansible-playbook call.yml \
 #     -e 'message=Добрий день! Це тест.' -e 'numbers=+380671234567' \
@@ -9,7 +9,7 @@
 #     [-e profile_id=1] [-e max_concurrent=1] \
 #     [-e ivr_operator=true] [-e ivr_repeat=true] [-e ivr_optout=true]
 #
-# Кілька номерів — через кому в numbers. Далі стеж:  ansible-playbook status.yml
+# Multiple numbers — comma-separated in numbers. Then watch:  ansible-playbook status.yml
 - name: Start a test campaign
   hosts: caller
   gather_facts: false
@@ -36,7 +36,7 @@
         web_password: "{{ (env_file.content | b64decode) | regex_search('WEB_PASSWORD=(.*)', '\\1') | first }}"
       no_log: true
 
-    - name: POST /start (JSON contract, Plan.md §15)
+    - name: POST /start (JSON contract)
       ansible.builtin.uri:
         url: http://localhost:8000/start
         method: POST

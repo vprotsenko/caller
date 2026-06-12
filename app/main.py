@@ -1,17 +1,17 @@
-"""FastAPI entry point — stages 1–2 (Plan.md §8, §15).
+"""FastAPI entry point — stages 1–2.
 
 Routes (all behind HTTP Basic Auth, same scheme as v1):
   GET  /              -> static/index.html
   POST /preview       -> synthesize the message, return an audio URL
   POST /call          -> stage-1 PoC: one ad-hoc call playing the message
-  POST /start         -> start a campaign (JSON body, §15); 409 if one runs
-  GET  /status        -> active-or-latest campaign snapshot (§15)
+  POST /start         -> start a campaign (JSON body); 409 if one runs
+  GET  /status        -> active-or-latest campaign snapshot
   GET  /audio/{name}  -> serve a synthesized WAV
 
 SIP profiles:
   GET /config, POST /config/profiles, POST /config/profiles/{id},
   DELETE /config/profiles/{id}      (passwords: write-only, only password_set
-                                     ever goes back — Plan.md §4)
+                                     ever goes back)
 History:
   GET /campaigns, GET /campaigns/{id},
   POST /campaigns/{id}/retry-failed (never touches optout),
@@ -19,7 +19,7 @@ History:
 
 WEB_PASSWORD comes from the environment; if unset, a random one is generated
 and logged so the app is never left open. NOTE: without TLS in front, Basic
-Auth credentials travel in cleartext (POC trade-off, Plan.md §12).
+Auth credentials travel in cleartext (POC trade-off).
 """
 
 import asyncio
@@ -91,9 +91,15 @@ _STATIC_TYPES = {".js": "application/javascript", ".css": "text/css",
                  ".html": "text/html"}
 
 
+# no-cache = "revalidate before use" (a 304 with FileResponse's ETag): without
+# it the browser keeps the old app.js after a redeploy until heuristic expiry,
+# and the new markup is left without its handlers (an empty IVR editor)
+_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 def index():
-    return FileResponse(INDEX_PATH, media_type="text/html")
+    return FileResponse(INDEX_PATH, media_type="text/html", headers=_NO_CACHE)
 
 
 @app.get("/static/{name}")
@@ -102,7 +108,8 @@ def static_file(name: str):
     if not os.path.isfile(path):
         return JSONResponse({"error": "not found"}, status_code=404)
     ext = os.path.splitext(path)[1]
-    return FileResponse(path, media_type=_STATIC_TYPES.get(ext, "application/octet-stream"))
+    return FileResponse(path, media_type=_STATIC_TYPES.get(ext, "application/octet-stream"),
+                        headers=_NO_CACHE)
 
 
 # --- TTS preview ----------------------------------------------------------------
@@ -111,36 +118,129 @@ def static_file(name: str):
 def preview(
     text: str = Form(...),
     voice: str = Form(tts.DEFAULT_VOICE),
-    speed: float = Form(1.05),
-    steps: int = Form(8),
+    speed: float = Form(tts.DEFAULT_SPEED),
+    steps: int = Form(tts.DEFAULT_STEPS),
+    silence: float = Form(tts.DEFAULT_SILENCE),
 ):
     text = jobs.normalize_text(text).strip()
     if not text:
         return JSONResponse({"error": "Порожній текст"}, status_code=400)
     if voice not in tts.VOICES:
         return JSONResponse({"error": f"Невідомий голос {voice}"}, status_code=400)
-    speed, steps, silence = tts.clamp(speed, steps, 0.3)
+    speed, steps, silence = tts.clamp(speed, steps, silence)
 
     out = os.path.join(AUDIO_DIR, f"preview_{voice}.wav")
-    tts.synthesize_native(text, voice, out, speed=speed, steps=steps, silence=silence)
+    try:
+        tts.synthesize_native(text, voice, out, speed=speed, steps=steps,
+                              silence=silence)
+    except Exception:  # noqa: BLE001 — the model may reject the params/text
+        logger.exception("preview synthesis failed")
+        return JSONResponse({"error": "Помилка синтезу"}, status_code=500)
     return {"voice": voice, "url": f"/audio/preview_{voice}.wav", "secs": tts.wav_seconds(out)}
 
 
-# --- Campaign (§15) ---------------------------------------------------------------
+# --- Scenario content (shared by /scenarios and /start) ----------------------------
 
-@app.post("/start")
-async def start(payload: dict = Body(...)):
-    name = (payload.get("name") or "").strip() or "Кампанія"
+def _parse_scenario_content(payload):
+    """Validate message/voice/type/voice_params/ivr; compile the IVR form as a
+    dry-run so a scenario with errors cannot be saved or started.
+    Returns (fields, err): fields carries the clamped values + compiled flow."""
     message = (payload.get("message") or "").strip()
     voice = payload.get("voice") or tts.DEFAULT_VOICE
     campaign_type = payload.get("campaign_type") or "info"
     if not message:
-        return JSONResponse({"error": "Порожній текст повідомлення"}, status_code=400)
+        return None, "Порожній текст повідомлення"
     if voice not in tts.VOICES:
-        return JSONResponse({"error": f"Невідомий голос {voice}"}, status_code=400)
+        return None, f"Невідомий голос {voice}"
     if campaign_type not in ("info", "operator"):
-        return JSONResponse({"error": f"Невідомий тип кампанії {campaign_type}"},
-                            status_code=400)
+        return None, f"Невідомий тип кампанії {campaign_type}"
+    vp = payload.get("voice_params") or {}
+    try:
+        speed, steps, silence = tts.clamp(
+            vp.get("speed", tts.DEFAULT_SPEED),
+            vp.get("steps", tts.DEFAULT_STEPS),
+            vp.get("silence", tts.DEFAULT_SILENCE))
+    except (TypeError, ValueError):
+        return None, "Некоректні параметри голосу"
+    ivr_form = payload.get("ivr") or {}
+    try:
+        compiled = flow_mod.compile_form(
+            message, voice, ivr_form,
+            voice_params={"speed": speed, "steps": steps, "silence": silence})
+    except flow_mod.FlowError as exc:
+        return None, str(exc)
+    except (TypeError, ValueError):
+        return None, "Некоректна IVR-форма"
+    return {
+        "message": message, "voice": voice, "campaign_type": campaign_type,
+        "voice_params": {"speed": speed, "steps": steps, "silence": silence},
+        "ivr": ivr_form, "compiled": compiled,
+    }, None
+
+
+# --- Scenarios (library of saved campaign variants) --------------------------------
+
+@app.get("/scenarios")
+def scenarios_list():
+    return {"scenarios": db.list_scenarios()}
+
+
+@app.post("/scenarios")
+def scenario_create(payload: dict = Body(...)):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Вкажіть назву сценарію"}, status_code=400)
+    fields, err = _parse_scenario_content(payload)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    try:
+        sid = db.create_scenario(name, fields["campaign_type"], fields["message"],
+                                 fields["voice"], fields["voice_params"], fields["ivr"])
+    except Exception:
+        return JSONResponse({"error": f"Сценарій «{name}» уже існує"}, status_code=409)
+    return {"ok": True, "id": sid}
+
+
+@app.post("/scenarios/{scenario_id}")
+def scenario_update(scenario_id: int, payload: dict = Body(...)):
+    if db.get_scenario(scenario_id) is None:
+        return JSONResponse({"error": "Сценарій не знайдено"}, status_code=404)
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Вкажіть назву сценарію"}, status_code=400)
+    fields, err = _parse_scenario_content(payload)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    try:
+        db.update_scenario(scenario_id, name, fields["campaign_type"],
+                           fields["message"], fields["voice"],
+                           fields["voice_params"], fields["ivr"])
+    except Exception:
+        return JSONResponse({"error": f"Сценарій «{name}» уже існує"}, status_code=409)
+    return {"ok": True}
+
+
+@app.delete("/scenarios/{scenario_id}")
+def scenario_delete(scenario_id: int):
+    db.delete_scenario(scenario_id)
+    return {"ok": True}
+
+
+# --- Campaign ---------------------------------------------------------------------
+
+@app.post("/start")
+async def start(payload: dict = Body(...)):
+    # start from a saved scenario (UI) or from inline fields (call.yml, old clients)
+    scenario = None
+    if payload.get("scenario_id") is not None:
+        scenario = db.get_scenario(payload["scenario_id"])
+        if scenario is None:
+            return JSONResponse({"error": "Сценарій не знайдено"}, status_code=400)
+    fields, err = _parse_scenario_content(scenario or payload)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    name = ((payload.get("name") or "").strip()
+            or (scenario["name"] if scenario else "Кампанія"))
 
     raw_numbers = payload.get("numbers") or []
     if isinstance(raw_numbers, str):
@@ -167,19 +267,16 @@ async def start(payload: dict = Body(...)):
     if profile is None:
         return JSONResponse({"error": "SIP-профіль не знайдено"}, status_code=400)
 
-    try:
-        compiled = flow_mod.compile_form(message, voice, payload.get("ivr"))
-    except flow_mod.FlowError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "Некоректна IVR-форма"}, status_code=400)
-
     if jobs.campaign_running():
         return JSONResponse({"detail": "campaign already running"}, status_code=409)
     campaign_id = db.create_campaign(
-        name, campaign_type, message, voice, compiled,
-        profile["id"], f"{profile['username']}@{profile['server']}",
-        max_concurrent, numbers)
+        name, fields["campaign_type"], fields["message"], fields["voice"],
+        fields["compiled"], profile["id"],
+        f"{profile['username']}@{profile['server']}",
+        max_concurrent, numbers,
+        scenario_id=scenario["id"] if scenario else None,
+        scenario_name=scenario["name"] if scenario else None,
+        ivr_form=fields["ivr"])
     err = jobs.start_campaign(campaign_id)
     if err:  # raced with another start
         db.set_campaign_status(campaign_id, "stopped", error=err, finished=True)
@@ -204,7 +301,7 @@ async def status():
 
 
 async def _operator_states(client):
-    """Operators with live registration + busy flags (Plan.md §15)."""
+    """Operators with live registration + busy flags."""
     busy = jobs.busy_extensions()
     out = []
     for op in db.list_operators():
@@ -329,7 +426,7 @@ def _validate_profile(name, server, port, username):
     return None
 
 
-# --- Operators (§15, stage 3) ------------------------------------------------------
+# --- Operators (stage 3) -----------------------------------------------------------
 
 @app.get("/config/operators")
 async def list_operators():
@@ -408,7 +505,7 @@ async def retry_failed(campaign_id: int):
     if c is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     failed = [r["number"] for r in db.campaign_numbers(campaign_id)
-              if r["status"] in db.RETRYABLE]  # optout is NEVER retried (§8)
+              if r["status"] in db.RETRYABLE]  # optout is NEVER retried
     if not failed:
         return JSONResponse({"error": "Немає невдалих номерів для повтору"}, status_code=400)
     if c["profile_id"] is None or db.get_profile(c["profile_id"]) is None:
@@ -418,7 +515,9 @@ async def retry_failed(campaign_id: int):
     new_id = db.create_campaign(
         f"{c['name']} (повтор)", c["campaign_type"], c["message_text"], c["voice"],
         json.loads(c["ivr_flow"]), c["profile_id"], c["profile_label"],
-        c["max_concurrent"], failed)
+        c["max_concurrent"], failed,
+        scenario_id=c["scenario_id"], scenario_name=c["scenario_name"],
+        ivr_form=json.loads(c["ivr_form"]) if c["ivr_form"] else None)
     err = jobs.start_campaign(new_id)
     if err:
         db.set_campaign_status(new_id, "stopped", error=err, finished=True)

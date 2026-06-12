@@ -2,6 +2,6 @@ fastapi
 uvicorn[standard]
 python-multipart
 supertonic
-# тести (§16 рівень 1) ганяються в цьому ж образі: docker compose run --rm app pytest
+# tests (verification level 1) run in this same image: docker compose run --rm app pytest
 pytest
 pytest-asyncio

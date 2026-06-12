@@ -1,4 +1,4 @@
-"""Outbound-socket server + IVR flow interpreter (Plan.md §2, §5, §6).
+"""Outbound-socket server + IVR flow interpreter.
 
 Every answered call is originated with `&socket(127.0.0.1:8084 async full)`,
 so FreeSWITCH opens a TCP connection here per call. The session handshake
@@ -8,7 +8,7 @@ then walks the campaign's flow JSON: playback prompts, waits for DTMF, etc.
 This module knows nothing about the database or campaigns: the worker
 (app/jobs.py) registers a CallContext per origination UUID and consumes the
 outcome from it. The interpreter talks to an abstract session (play /
-wait_digit / hangup), so unit tests drive it with a scripted fake (§16 lvl 1).
+wait_digit / hangup), so unit tests drive it with a scripted fake.
 """
 
 import asyncio
@@ -19,8 +19,13 @@ from . import amd as amd_mod, esl
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS = 30          # node transitions per call: graph cycles are legal (§5),
-                        # infinite loops are not
+MAX_STEPS = 30          # node transitions per call: graph cycles are legal,
+                        # infinite loops are not. For deep menu trees the real
+                        # cap scales with graph size — see run_flow()
+# Initial silence before the FIRST prompt (ms): the callee brings the phone to
+# their ear and the post-answer media renegotiation (jobs.media_reneg_after_answer)
+# completes. Prompts themselves carry no lead-in — see jobs.prerender_prompts.
+LEAD_IN_MS = 2000
 EXECUTE_TIMEOUT = 180   # any single app (playback of a long message) must fit
 AMD_TIMEOUT = 15        # seconds to let mod_amd reach a verdict
 BEEP_TIMEOUT = 20       # seconds to wait for the voicemail beep (mod_avmd)
@@ -150,7 +155,13 @@ class OutboundSession:
         if arg:
             headers["execute-app-arg"] = arg
         try:
-            reply = await self._sendmsg(headers)
+            # FS (this build at least) sends the command/reply for a sendmsg
+            # execute only AFTER the application finishes — together with
+            # EXECUTE_COMPLETE. So the reply timeout has to cover the duration
+            # of the playback/PAGD, not just the dispatch: with the default
+            # 15 s, any prompt or announce+wait longer than 15 s killed the
+            # session with a TimeoutError.
+            reply = await self._sendmsg(headers, timeout=timeout)
             if not reply.startswith("+OK"):
                 raise esl.ESLError(f"execute {app} refused: {reply}")
             return await asyncio.wait_for(done, timeout)
@@ -169,7 +180,7 @@ class OutboundSession:
 
         A test override channel var (amd_test_result), set via originate vars,
         short-circuits the real module so loopback E2E can simulate a verdict
-        (§16 level 4) — the same idea as uuid_recv_dtmf for digits.
+        — the same idea as uuid_recv_dtmf for digits.
 
         `amd_available` (mod_amd loaded — probed once by the worker over the
         inbound connection) gates the real app: a missing application must not
@@ -212,28 +223,34 @@ class OutboundSession:
                 pass
         return detected
 
-    async def wait_digit(self, timeout):
-        """One DTMF digit, or None on timeout. Raises CallEnded if the call died.
+    async def wait_digit(self, timeout, prompt=None):
+        """Play `prompt` (if given) and wait for one DTMF digit; None on
+        timeout. Raises CallEnded if the call died.
 
-        Implemented with play_and_get_digits, NOT by waiting for DTMF events:
-        loopback channels (the §16 test path) never emit DTMF events —
-        uuid_recv_dtmf only queues the digit into the channel input queue,
-        which only a digit-reading application consumes. play_and_get_digits
-        also picks up digits already queued during the message (barge-in).
+        Implemented with ONE play_and_get_digits, NOT play + wait-for-events:
+        - the prompt goes in as the PAGD file, so a digit BARGES IN — the
+          announcement stops mid-word and the digit acts immediately (separate
+          playback isn't interruptible: «pressed 2 — nothing happened»);
+        - loopback channels (the E2E test path) never emit DTMF events —
+          uuid_recv_dtmf only queues the digit into the channel input queue,
+          which only a digit-reading application consumes; PAGD also picks up
+          digits already queued during a previous prompt;
+        - the self.dtmf event queue is deliberately NOT consulted: a digit
+          arrives BOTH as an event and in the channel input queue, and reading
+          both sources made the same press count twice (a stale event digit
+          would instantly eat the next round).
         """
         if self.ended.is_set():
             raise CallEnded(self.hangup_cause or "NORMAL_CLEARING")
-        if not self.dtmf.empty():  # real SIP calls also emit DTMF events
-            return self.dtmf.get_nowait()
         self._digit_seq += 1
         var = f"ivr_digit_{self._digit_seq}"
         ms = max(1000, int(timeout * 1000))
         # min max tries timeout terminators file invalid_file var regexp:
         # \d accepts any digit — branch matching is the interpreter's job
-        arg = (f"1 1 1 {ms} # silence_stream://250 silence_stream://250 "
-               f"{var} \\d")
+        arg = (f"1 1 1 {ms} # {prompt or 'silence_stream://250'} "
+               f"silence_stream://250 {var} \\d")
         event = await self.execute("play_and_get_digits", arg,
-                                   timeout=timeout + 30)
+                                   timeout=timeout + 60)
         digit = (event or {}).get(f"variable_{var}")
         if digit is None:  # event lacked channel vars — ask the engine directly
             body = (await self.api(f"uuid_getvar {self.uuid} {var}")).strip()
@@ -349,7 +366,7 @@ class OutboundSession:
 async def run_flow(session, flow, prompt_files, on_digit=None,
                    operators=None, ring_timeout=25, bridge_max=3600,
                    bridge_vars=""):
-    """Walk the §5 flow graph on a live session.
+    """Walk the flow graph on a live session.
 
     Returns {"mark": None|"optout", "transferred": bool, "dtmf": str,
     "bridge_attempted": bool, "bridge_target": str|None}. CallEnded mid-flow
@@ -360,8 +377,11 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
                "bridge_attempted": False, "bridge_target": None}
     nodes = flow["nodes"]
     current = flow["start"]
+    # a human wandering a nested tree with «back» legitimately makes many
+    # transitions, so the runaway guard grows with the graph
+    step_limit = max(MAX_STEPS, 5 * len(nodes))
     try:
-        for _ in range(MAX_STEPS):
+        for _ in range(step_limit):
             node = nodes[current]
             ntype = node["type"]
 
@@ -372,12 +392,16 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
                 current = node["next"]
 
             elif ntype == "menu":
-                if node.get("prompt"):
-                    await session.play(prompt_files[node["prompt"]])
                 branch = None
-                # max_repeats = how many extra waiting rounds after the first
+                announce = (prompt_files[node["prompt"]]
+                            if node.get("prompt") else None)
+                # max_repeats = how many extra waiting rounds after the first.
+                # The announcement replays on EVERY round (otherwise repeat
+                # rounds are dead air) and goes through wait_digit so a digit
+                # interrupts it mid-word (barge-in).
                 for _attempt in range(int(node.get("max_repeats", 0)) + 1):
-                    digit = await session.wait_digit(int(node["timeout_sec"]))
+                    digit = await session.wait_digit(int(node["timeout_sec"]),
+                                                     prompt=announce)
                     if digit is None:
                         continue
                     outcome["dtmf"] += digit
@@ -414,7 +438,7 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
                 await session.hangup()
                 return outcome
 
-        logger.warning("flow exceeded %d steps — hanging up (cycle guard)", MAX_STEPS)
+        logger.warning("flow exceeded %d steps — hanging up (cycle guard)", step_limit)
         await session.hangup()
     except CallEnded:
         logger.info("callee hung up mid-flow (cause=%s)", session.hangup_cause)
@@ -425,7 +449,7 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
 
 
 async def run_call(session, ctx):
-    """Full answered-call lifecycle (§6): AMD → branch → flow.
+    """Full answered-call lifecycle: AMD → branch → flow.
 
     Returns the flow outcome dict augmented with "amd_result". On a MACHINE
     verdict the flow is skipped: info campaigns drop the message after the
@@ -452,6 +476,10 @@ async def run_call(session, ctx):
             return _flow_outcome(amd_result=verdict, amd_action=action)
         # CONTINUE (HUMAN / NOTSURE) falls through to the normal flow
 
+    try:
+        await session.play(f"silence_stream://{LEAD_IN_MS}")
+    except CallEnded:
+        return _flow_outcome(amd_result=verdict)
     outcome = await run_flow(session, ctx.flow, ctx.prompt_files,
                              operators=ctx.operators,
                              ring_timeout=ctx.ring_timeout,

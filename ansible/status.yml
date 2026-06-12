@@ -1,7 +1,7 @@
 ---
-# Опитати /status розгорнутого застосунку до завершення кампанії.
-#   ansible-playbook status.yml            # один знімок
-#   ansible-playbook status.yml -e wait=1  # чекати до phase: done/stopped
+# Poll /status of the deployed app until the campaign finishes.
+#   ansible-playbook status.yml            # one snapshot
+#   ansible-playbook status.yml -e wait=1  # wait until phase: done/stopped
 - name: Show campaign status
   hosts: caller
   gather_facts: false
@@ -36,7 +36,7 @@
     - name: Status
       ansible.builtin.debug:
         msg:
-          - "Кампанія: #{{ s.json.campaign_id | default('—') }} {{ s.json.name | default('') }}"
-          - "Фаза: {{ s.json.phase | default('?') }}"
-          - "Лічильники: {{ s.json.counts | default({}) }}"
+          - "Campaign: #{{ s.json.campaign_id | default('—') }} {{ s.json.name | default('') }}"
+          - "Phase: {{ s.json.phase | default('?') }}"
+          - "Counters: {{ s.json.counts | default({}) }}"
           - "FreeSWITCH ESL: {{ s.json.esl_connected | default('?') }}"

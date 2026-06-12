@@ -1,4 +1,4 @@
-"""Flow interpreter against a scripted fake session (§16 level 1).
+"""Flow interpreter against a scripted fake session (verification level 1).
 
 No FreeSWITCH: the fake session records played prompts and serves DTMF digits
 from a script.
@@ -28,7 +28,10 @@ class FakeSession:
             raise ivr.CallEnded("NORMAL_CLEARING")
         self.played.append(path)
 
-    async def wait_digit(self, timeout):
+    async def wait_digit(self, timeout, prompt=None):
+        if prompt:  # PAGD plays the announce itself (barge-in); the fake
+            # counts it as a play
+            await self.play(prompt)
         if not self.digits:
             return None
         digit = self.digits.pop(0)
@@ -72,7 +75,8 @@ class FakePool:
         return f"user/{ext}@test.domain"
 
 
-FILES = {"main": "/a/main.wav", "connecting": "/a/conn.wav", "optout_ok": "/a/opt.wav"}
+FILES = {"main": "/a/main.wav", "menu": "/a/menu.wav",
+         "connect_1": "/a/conn.wav", "optout_ok_0": "/a/opt.wav"}
 
 FORM = {
     "operator": {"enabled": True, "connect_text": "Зачекайте"},
@@ -90,7 +94,8 @@ def make_flow(form=FORM):
 async def test_timeout_plays_message_and_hangs_up():
     session = FakeSession(digits=[])  # nobody presses anything
     outcome = await ivr.run_flow(session, make_flow(), FILES)
-    assert session.played == ["/a/main.wav"]
+    # the menu announce plays on each of the 3 waiting rounds (max_repeats=2)
+    assert session.played == ["/a/main.wav", "/a/menu.wav", "/a/menu.wav", "/a/menu.wav"]
     assert session.hung_up
     assert outcome["dtmf"] == ""
     assert outcome["mark"] is None
@@ -99,7 +104,8 @@ async def test_timeout_plays_message_and_hangs_up():
 async def test_press_2_replays_message():
     session = FakeSession(digits=["2"])
     outcome = await ivr.run_flow(session, make_flow(), FILES)
-    assert session.played == ["/a/main.wav", "/a/main.wav"]  # replayed once
+    assert session.played.count("/a/main.wav") == 2  # replayed once
+    assert session.played[:3] == ["/a/main.wav", "/a/menu.wav", "/a/main.wav"]
     assert outcome["dtmf"] == "2"
     assert session.hung_up
 
@@ -171,7 +177,7 @@ async def test_repeats_exhausted_goes_to_on_timeout():
 
 async def test_callee_hangup_mid_flow_returns_partial_outcome():
     session = FakeSession(digits=["2"])
-    session.die_after_plays = 1  # dies on the replay
+    session.die_after_plays = 2  # dies on the replay (after main + menu)
     outcome = await ivr.run_flow(session, make_flow(), FILES)
     assert outcome["dtmf"] == "2"
     assert not session.hung_up  # the callee hung up, not us
@@ -193,7 +199,61 @@ async def test_on_digit_callback_fires():
     assert seen == ["0"]
 
 
-# --- AMD step in run_call (§6, stage 4) -------------------------------------------
+# --- nested menu tree (the recursive form) -----------------------------------------
+
+TREE_FORM = {
+    "timeout_sec": 1,
+    "menu": {"options": [
+        {"digit": "1", "action": "operator"},
+        {"digit": "3", "action": "menu", "label": "Графік роботи", "menu": {
+            "text": "Працюємо з девʼятої до вісімнадцятої.",
+            "options": [
+                {"digit": "1", "action": "play", "label": "Субота",
+                 "text": "У суботу коротший день.", "then": "stay"},
+                {"digit": "9", "action": "back"},
+            ],
+        }},
+        {"digit": "0", "action": "optout"},
+    ]},
+}
+
+
+def make_tree():
+    flow = flow_mod.compile_form("Привіт", "F3", TREE_FORM)
+    files = {name: f"/a/{name}.wav" for name in flow["prompts"]}
+    return flow, files
+
+
+async def test_tree_walk_submenu_info_back_optout():
+    # 3 → submenu (level text + announce), 1 → phrase and back into the same
+    # menu, 9 → back to the root, 0 → optout
+    flow, files = make_tree()
+    session = FakeSession(digits=["3", "1", "9", "0"])
+    outcome = await ivr.run_flow(session, flow, files)
+    assert session.played == [
+        "/a/main.wav", "/a/menu.wav",          # root: message + announce
+        "/a/text_3.wav", "/a/menu_3.wav",      # entering the submenu
+        "/a/info_3_1.wav", "/a/menu_3.wav",    # phrase, then=stay → same level
+        "/a/menu.wav",                         # back: root announce (no msg replay)
+        "/a/optout_ok_0.wav",                  # optout
+    ]
+    assert outcome["dtmf"] == "3190"
+    assert outcome["mark"] == "optout"
+    assert session.hung_up
+
+
+async def test_tree_deep_wandering_survives_step_guard():
+    # wandering back and forth across the tree is legitimate: the step limit
+    # grows with the graph (10 rounds × 3 transitions + enter/exit = 34 steps
+    # > the old MAX_STEPS=30)
+    flow, files = make_tree()
+    session = FakeSession(digits=["3", "9"] * 10 + ["0"])
+    outcome = await ivr.run_flow(session, flow, files)
+    assert outcome["mark"] == "optout"
+    assert outcome["dtmf"].endswith("0")
+
+
+# --- AMD step in run_call (stage 4) ------------------------------------------------
 
 def make_ctx(session_flow=None, campaign_type="info", amd_enabled=True):
     ctx = ivr.CallContext(1, session_flow or make_flow(), FILES,
@@ -205,7 +265,9 @@ async def test_amd_disabled_runs_flow_directly():
     session = FakeSession(digits=[])
     ctx = make_ctx(amd_enabled=False)
     outcome = await ivr.run_call(session, ctx)
-    assert session.played[0] == "/a/main.wav"  # flow ran
+    # before the flow — the initial silence (ear-to-phone + media renegotiation)
+    assert session.played[0] == f"silence_stream://{ivr.LEAD_IN_MS}"
+    assert session.played[1] == "/a/main.wav"  # flow ran
     assert outcome["amd_result"] is None
 
 

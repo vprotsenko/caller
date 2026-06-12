@@ -1,12 +1,12 @@
-"""Operator extensions (Plan.md §3, §7, §15): directory XML generation,
-live registration checks, free-operator pool for bridge nodes.
+"""Operator extensions: directory XML generation, live registration
+checks, free-operator pool for bridge nodes.
 
 The controller writes one fs/directory/default/<ext>.xml per operator and
 runs `reloadxml`; softphones register against the internal profile.
 
 Registration is checked live with `sofia_contact <ext>@<domain>` instead of
 tracking sofia::register events: the query can't drift from reality and
-survives ESL reconnects (deviation noted in Plan.md §7).
+survives ESL reconnects.
 
 SECURITY: operator SIP passwords are written ONLY into the generated XML
 (volume, gitignored) and the DB — never logged, never returned by the API.
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 FS_CONF_DIR = os.environ.get("FS_CONF_DIR", "/app/fs")
 
-EXTENSION_RE = re.compile(r"^\d{3,6}$")  # 1001..1009 recommended (§3)
+EXTENSION_RE = re.compile(r"^\d{3,6}$")  # 1001..1009 recommended
 
 
 def _attr(value):
@@ -90,7 +90,7 @@ async def reloadxml(client):
 
 
 class OperatorPool:
-    """Free-operator bookkeeping for one running campaign (Plan.md §7):
+    """Free-operator bookkeeping for one running campaign:
     free = enabled + registered (live sofia_contact) + not in a bridge."""
 
     def __init__(self, client):
@@ -120,7 +120,7 @@ class OperatorPool:
         return set(self._busy)
 
     async def free_count(self):
-        """Operators able to take a call right now (pacing, §7)."""
+        """Operators able to take a call right now (pacing)."""
         n = 0
         for op in db.list_operators(enabled_only=True):
             if op["extension"] in self._busy:

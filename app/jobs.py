@@ -1,13 +1,13 @@
-"""Campaign worker (Plan.md §2, §6, §7) + the stage-1 single-call PoC.
+"""Campaign worker + the stage-1 single-call PoC.
 
 One campaign at a time (a second start gets a 409 upstream). The worker
 prerenders all flow prompts to WAV (hash cache — the campaign does not start
-if synthesis fails, §5), then dials pending numbers keeping at most
-`max_concurrent` calls in flight (§7), writing every outcome to SQLite as it
-happens (§6: durable, restart -> 'interrupted', resume is explicit).
+if synthesis fails), then dials pending numbers keeping at most
+`max_concurrent` calls in flight, writing every outcome to SQLite as it
+happens (durable, restart -> 'interrupted', resume is explicit).
 
 Pure helpers (number normalization, dial string, originate command, cause
-mapping) are unit-tested without FreeSWITCH (§16 level 1).
+mapping) are unit-tested without FreeSWITCH.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 AUDIO_DIR = os.environ.get("AUDIO_DIR", "/app/audio")
 # {gw} = gateway of the campaign's SIP profile, {number} = dialled number.
-# Tests override to loopback/{number}/default (no {gw}) — Plan.md §16 level 4.
+# The loopback E2E tests override to loopback/{number}/default (no {gw}).
 DIAL_STRING_TEMPLATE = os.environ.get(
     "DIAL_STRING_TEMPLATE", "sofia/gateway/{gw}/{number}")
 ORIGINATE_TIMEOUT = int(os.environ.get("ORIGINATE_TIMEOUT", "30"))
@@ -39,7 +39,7 @@ CALLER_ID_NAME = os.environ.get("CALLER_ID_NAME", "").strip()
 # Extra channel vars prepended to every originate. Empty in production (the
 # trunk negotiates codecs); the loopback E2E env sets e.g.
 # absolute_codec_string=PCMA so the loopback leg and the SIP operator leg share
-# a codec and the bridge needs no transcoding (Plan.md §16).
+# a codec and the bridge needs no transcoding.
 ORIGINATE_EXTRA_VARS = os.environ.get("ORIGINATE_EXTRA_VARS", "").strip()
 # Same idea for the operator bridge leg (loopback test pins a shared codec).
 BRIDGE_EXTRA_VARS = os.environ.get("BRIDGE_EXTRA_VARS", "").strip()
@@ -58,9 +58,9 @@ AMD_ENABLED = os.environ.get("AMD_ENABLED", "1") not in ("0", "false", "")
 _NUMBER_RE = re.compile(r"^\+?\d{3,15}$")
 
 # Supertonic rejects typographic apostrophes/dashes common in Ukrainian text
-# (U+02BC у «зʼєднати» тощо) — map them to supported ASCII before synthesis.
+# (U+02BC in «зʼєднати» etc.) — map them to supported ASCII before synthesis.
 _TEXT_REPLACEMENTS = str.maketrans({
-    "ʼ": "'",  # MODIFIER LETTER APOSTROPHE (український апостроф)
+    "ʼ": "'",  # MODIFIER LETTER APOSTROPHE (the Ukrainian apostrophe)
     "’": "'",  # RIGHT SINGLE QUOTATION MARK
     "‘": "'",
     "ʹ": "'",
@@ -79,9 +79,9 @@ def normalize_text(text):
     """Make typographic punctuation synthesizable (Supertonic rejects it)."""
     return (text or "").translate(_TEXT_REPLACEMENTS)
 
-# Hangup cause -> campaign_number.status (Plan.md §6). Anything else, or an
-# originate refused by the provider, is "failed" — often a billing/route
-# problem on the trunk, not an app bug.
+# Hangup cause -> campaign_number.status. Anything else, or an originate
+# refused by the provider, is "failed" — often a billing/route problem on
+# the trunk, not an app bug.
 _BUSY_CAUSES = {"USER_BUSY"}
 _NO_ANSWER_CAUSES = {"NO_ANSWER", "ORIGINATOR_CANCEL", "NO_USER_RESPONSE"}
 
@@ -121,10 +121,44 @@ def build_dial_string(number, gateway="flysip", template=None):
 # is fixed at the sofia profile level with disable-hold=true (so a=sendonly is
 # not treated as hold). Keep BOTH. Set IGNORE_EARLY_MEDIA=0 only to debug.
 IGNORE_EARLY_MEDIA = os.environ.get("IGNORE_EARLY_MEDIA", "1") in ("1", "true", "yes")
-# Re-INVITE right after answer so FreeSWITCH adopts the 200 OK media address +
-# sendrecv (fixes one-way audio on trunks with a=sendonly early media). On by
+# Two re-INVITEs right after answer (see media_reneg_after_answer) — undo the
+# one-way media FreeSWITCH latches from a=sendonly early media (FlySIP). On by
 # default; set MEDIA_RENEG_ON_ANSWER=0 to disable.
 MEDIA_RENEG_ON_ANSWER = os.environ.get("MEDIA_RENEG_ON_ANSWER", "1") in ("1", "true", "yes")
+# Pause between the two re-INVITEs: the first SIP transaction must complete
+# (~250 ms on FlySIP) before the second INVITE, or it collides into a 491.
+MEDIA_RENEG_PAUSE = float(os.environ.get("MEDIA_RENEG_PAUSE", "1.0"))
+
+
+async def media_reneg_after_answer(client, call_uuid):
+    """Two re-INVITEs that undo one-way media latched from early media.
+
+    FlySIP sends a changed 183 with `a=sendonly`; FreeSWITCH 1.10.12 latches
+    smode=RECVONLY from it and then silently drops ALL outbound RTP (the write
+    gate in switch_core_media.c), while a `sendrecv` answer never resets smode
+    back (the SDP_ANSWER handling has no sendrecv branch). One re-INVITE cannot
+    fix both the gate and the SDP contract, hence the two-step dance:
+
+    1. plain re-INVITE: FS offers its current direction (recvonly), the trunk
+       mirrors `a=sendonly`, and processing that ANSWER sets smode=SENDONLY —
+       the write gate opens and the real media address is adopted;
+    2. re-INVITE with the one-shot `origination_audio_mode=sendrecv` override:
+       the offer says sendrecv, the trunk answers sendrecv, the session is
+       contractually two-way again; smode stays SENDONLY, so FS keeps sending.
+
+    On healthy trunks both re-INVITEs are no-ops (sendrecv offer/answer). The
+    IVR's initial silence_stream lead-in (ivr.run_call) covers the
+    renegotiation. Best-effort: a failure here must never kill the call.
+    """
+    try:
+        r1 = await client.api(f"uuid_media_reneg {call_uuid}")
+        await asyncio.sleep(MEDIA_RENEG_PAUSE)
+        await client.api(f"uuid_setvar {call_uuid} origination_audio_mode sendrecv")
+        r2 = await client.api(f"uuid_media_reneg {call_uuid}")
+        logger.info("media reneg %s: #1 %s, #2 %s",
+                    call_uuid, (r1 or "").strip(), (r2 or "").strip())
+    except Exception:  # noqa: BLE001 — never fail the call on this
+        logger.info("media reneg failed for %s", call_uuid, exc_info=True)
 
 
 def _originate_vars(call_uuid):
@@ -151,7 +185,7 @@ def build_originate_cmd(dial_string, wav_path, call_uuid):
 
 def build_campaign_originate_cmd(dial_string, call_uuid,
                                  ivr_host=None, ivr_port=None):
-    """Campaign shape: hand the answered call to the outbound socket (§3)."""
+    """Campaign shape: hand the answered call to the outbound socket."""
     host = ivr_host or IVR_HOST
     port = ivr_port or IVR_PORT
     return (f"originate {{{_originate_vars(call_uuid)}}}"
@@ -159,7 +193,7 @@ def build_campaign_originate_cmd(dial_string, call_uuid,
 
 
 def outcome_status(outcome):
-    """Final status of an ANSWERED call from the IVR outcome (Plan.md §6)."""
+    """Final status of an ANSWERED call from the IVR outcome."""
     action = outcome.get("amd_action")
     if action in amd_mod.STATUS:        # voicemail-left / machine-hangup
         return amd_mod.STATUS[action]
@@ -172,8 +206,14 @@ def outcome_status(outcome):
     return "answered"
 
 
-def prompt_path(text, voice):
-    digest = hashlib.sha1(f"{text}|{voice}|{tts.DEFAULT_LANG}".encode()).hexdigest()[:16]
+def prompt_path(text, voice, speed=tts.DEFAULT_SPEED, steps=tts.DEFAULT_STEPS,
+                silence=tts.DEFAULT_SILENCE):
+    # "|lead0" distinguishes prompts without a baked-in lead-in from the old
+    # cache that had it; the generation parameters are part of the key,
+    # otherwise a speed change would serve the old WAV from the cache
+    digest = hashlib.sha1(
+        f"{text}|{voice}|{tts.DEFAULT_LANG}|lead0|{speed}|{steps}|{silence}"
+        .encode()).hexdigest()[:16]
     return os.path.join(AUDIO_DIR, f"prompt_{digest}.wav")
 
 
@@ -181,14 +221,21 @@ def prerender_prompts(flow):
     """Synthesize every flow prompt to a telephony WAV (cache by hash).
 
     Returns {prompt_name: wav_path}. Raises if any synthesis fails — the
-    campaign must not start half-mute (§5)."""
+    campaign must not start half-mute. Prompts carry NO lead-in silence:
+    between menu rounds it reads as dead air; the initial ear-to-phone pause
+    is played by the IVR itself (ivr.run_call, silence_stream)."""
     files = {}
     for name, prompt in flow["prompts"].items():
         text = normalize_text(prompt["text"])
-        path = prompt_path(text, prompt["voice"])
+        speed = float(prompt.get("speed", tts.DEFAULT_SPEED))
+        steps = int(prompt.get("steps", tts.DEFAULT_STEPS))
+        silence = float(prompt.get("silence", tts.DEFAULT_SILENCE))
+        path = prompt_path(text, prompt["voice"], speed, steps, silence)
         if not os.path.isfile(path):
             native = path + ".native.wav"
-            tts.synthesize_telephony(text, prompt["voice"], native, path)
+            tts.synthesize_telephony(text, prompt["voice"], native, path,
+                                     lead_in=0.0, speed=speed, steps=steps,
+                                     silence=silence)
             try:
                 os.remove(native)
             except OSError:
@@ -293,8 +340,8 @@ async def _run_campaign(campaign_id):
             return
 
         # Materialize the campaign's SIP profile into a FreeSWITCH gateway and
-        # dial through it (Plan.md §3/§8). A loopback override template skips
-        # this (no {gw}); the static .env `flysip` gateway is the fallback.
+        # dial through it. A loopback override template skips this (no {gw});
+        # the static .env `flysip` gateway is the fallback.
         gateway = "flysip"
         if "{gw}" in DIAL_STRING_TEMPLATE:
             profile = db.get_profile(campaign["profile_id"])
@@ -328,7 +375,7 @@ async def _run_campaign(campaign_id):
         while not _active["stopping"]:
             allowed = max_concurrent
             if pool is not None:
-                # §7: no more new originates than free registered operators
+                # no more new originates than free registered operators
                 allowed = min(allowed, len(tasks) + await pool.free_count())
             while len(tasks) < allowed:
                 row = db.claim_next_pending(campaign_id)
@@ -402,17 +449,8 @@ async def _dial_number(client, row, flow, files, pool=None, campaign_type="info"
             return
 
         _active["calls"][call_uuid]["state"] = "ivr"
-        # Force a media re-negotiation right after answer: trunks that send
-        # `a=sendonly` early media (FlySIP ringback) make FreeSWITCH latch the
-        # remote media address/direction from the 183, not the 200 OK, so our
-        # audio is never transmitted (one-way silence). A re-INVITE makes the
-        # provider re-answer with its real media address + sendrecv. The WAV's
-        # LEAD_IN silence covers the ~200 ms reneg. Best-effort.
         if MEDIA_RENEG_ON_ANSWER:
-            try:
-                await client.api(f"uuid_media_reneg {call_uuid}")
-            except Exception:  # noqa: BLE001 — never fail the call on this
-                logger.debug("media reneg failed for %s", call_uuid)
+            await media_reneg_after_answer(client, call_uuid)
         budget = ANSWERED_CALL_BUDGET + (BRIDGE_MAX_SECONDS if pool else 0)
         try:
             outcome = await asyncio.wait_for(ctx.done, budget)
@@ -448,7 +486,7 @@ async def _dial_number(client, row, flow, files, pool=None, campaign_type="info"
 
 
 def snapshot():
-    """Active-or-latest campaign state for GET /status (Plan.md §15)."""
+    """Active-or-latest campaign state for GET /status."""
     campaign_id = _active["campaign_id"] if campaign_running() else None
     campaign_id = campaign_id or db.latest_campaign_id()
     if campaign_id is None:

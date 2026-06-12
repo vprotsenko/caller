@@ -1,4 +1,4 @@
-# OPTIONAL FreeSWITCH image + mod_amd (answering-machine detection, Plan.md §4).
+# OPTIONAL FreeSWITCH image + mod_amd (answering-machine detection).
 #
 # The base safarov/freeswitch image ships mod_avmd (voicemail-beep detection)
 # but NOT mod_amd (HUMAN/MACHINE classification — a third-party module absent
@@ -12,8 +12,9 @@
 # only for real AMD, then point compose at it:
 #   docker build -f Dockerfile.freeswitch -t caller-freeswitch:amd .
 #   echo 'FREESWITCH_IMAGE=caller-freeswitch:amd' >> .env
-# Real AMD accuracy is verified by a human against real voicemail (§16 level 5);
-# the branch logic itself is verified by simulating amd_test_result (§16 lvl 4).
+# Real AMD accuracy is verified by a human against real voicemail (verification
+# level 5); the branch logic itself is verified by simulating amd_test_result
+# (verification level 4).
 
 FROM debian:bookworm AS amd-builder
 ARG FS_VERSION=v1.10.12
