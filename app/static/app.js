@@ -84,7 +84,8 @@ const IVR_MAX_DEPTH = 4; // дзеркало flow.MAX_DEPTH
 const DIGIT_WORDS = {"0":"нуль","1":"один","2":"два","3":"три","4":"чотири",
   "5":"п'ять","6":"шість","7":"сім","8":"вісім","9":"дев'ять"};
 const ACTION_UK = {operator:"оператор", replay:"повторити", menu:"підменю",
-  play:"фраза", back:"назад", optout:"відписатися", hangup:"завершити"};
+  play:"фраза", back:"назад", home:"головне меню", optout:"відписатися",
+  hangup:"завершити"};
 const THEN_UK = {stay:"потім — знову це меню", back:"потім — на рівень вище",
   hangup:"потім — завершити дзвінок"};
 // Дзеркало flow.ANNOUNCE_TEMPLATES (сервер — джерело правди): плейсхолдер
@@ -94,6 +95,7 @@ const ANNOUNCE_UK = {
   replay: w => `Щоб прослухати ще раз, натисніть ${w}.`,
   optout: w => `Щоб відписатися від дзвінків, натисніть ${w}.`,
   back: w => `Щоб повернутися назад, натисніть ${w}.`,
+  home: w => `Щоб повернутися в головне меню, натисніть ${w}.`,
   hangup: w => `Щоб завершити дзвінок, натисніть ${w}.`,
 };
 const DEFAULT_CONNECT_TEXT = "Зачекайте, з'єднуємо з оператором";
@@ -171,7 +173,7 @@ function renderOption(menu, opt, idx, depth, syncAnnounce) {
   dig.onchange = () => { opt.digit = dig.value; renderIvr(); };
   const act = el("select", { title: "Дія" });
   Object.keys(ACTION_UK).forEach(a => {
-    if (a === "back" && depth === 1) return;          // нікуди повертатись
+    if ((a === "back" || a === "home") && depth === 1) return; // нікуди повертатись
     if (a === "menu" && depth >= IVR_MAX_DEPTH) return; // ліміт глибини
     act.append(el("option", { value: a, textContent: ACTION_UK[a],
                               selected: opt.action === a }));

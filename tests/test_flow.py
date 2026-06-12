@@ -239,6 +239,23 @@ def test_compile_tree_rejects_back_on_root():
         flow_mod.compile_form("Привіт", "F3", form)
 
 
+def test_compile_tree_home_jumps_to_root_menu():
+    # «головне меню» з третього рівня — туди, куди back не дістає
+    form = tree_form()
+    sub = form["menu"]["options"][2]["menu"]
+    sub["options"].append({"digit": "0", "action": "home"})
+    flow = flow_mod.compile_form("Привіт", "F3", form)
+    assert flow["nodes"]["menu_3"]["branches"]["0"] == "menu"
+    assert "Щоб повернутися в головне меню, натисніть нуль." \
+        in flow["prompts"]["menu_3"]["text"]
+
+
+def test_compile_tree_rejects_home_on_root():
+    form = {"menu": {"options": [{"digit": "8", "action": "home"}]}}
+    with pytest.raises(flow_mod.FlowError, match="головне меню"):
+        flow_mod.compile_form("Привіт", "F3", form)
+
+
 def test_compile_tree_rejects_empty_submenu():
     form = {"menu": {"options": [
         {"digit": "3", "action": "menu", "label": "Порожнє", "menu": {}},

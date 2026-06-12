@@ -32,7 +32,7 @@ DIGIT_WORDS = {"0": "нуль", "1": "один", "2": "два", "3": "три",
                "4": "чотири", "5": "п'ять", "6": "шість", "7": "сім",
                "8": "вісім", "9": "дев'ять"}
 
-ACTIONS = ("operator", "replay", "menu", "play", "back", "optout", "hangup")
+ACTIONS = ("operator", "replay", "menu", "play", "back", "home", "optout", "hangup")
 
 # Шматки автогенерованого анонсу рівня. Без анонсу меню — мертва тиша:
 # play_and_get_digits грає лише silence_stream, і абонент не знає, що можна
@@ -43,6 +43,7 @@ ANNOUNCE_TEMPLATES = {
     "replay": "Щоб прослухати ще раз, натисніть {digit}.",
     "optout": "Щоб відписатися від дзвінків, натисніть {digit}.",
     "back": "Щоб повернутися назад, натисніть {digit}.",
+    "home": "Щоб повернутися в головне меню, натисніть {digit}.",
     "hangup": "Щоб завершити дзвінок, натисніть {digit}.",
 }
 LABELLED_TEMPLATE = "{label}: натисніть {digit}."
@@ -221,6 +222,11 @@ def compile_form(message_text, voice, ivr=None, voice_params=None):
                 if parent_menu_node is None:
                     raise FlowError(f"{where}: «назад» неможливий на верхньому рівні")
                 branches[digit] = parent_menu_node
+            elif action == "home":
+                if parent_menu_node is None:
+                    raise FlowError(
+                        f"{where}: «головне меню» неможливе на верхньому рівні")
+                branches[digit] = "menu"  # кореневий menu-вузол (суфікс порожній)
             elif action == "hangup":
                 branches[digit] = "bye"
             elif action == "play":
