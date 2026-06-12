@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 MAX_STEPS = 30          # node transitions per call: graph cycles are legal (§5),
                         # infinite loops are not
+# Initial silence before the FIRST prompt (ms): the callee brings the phone to
+# their ear and the post-answer media renegotiation (jobs.media_reneg_after_answer)
+# completes. Prompts themselves carry no lead-in — see jobs.prerender_prompts.
+LEAD_IN_MS = 2000
 EXECUTE_TIMEOUT = 180   # any single app (playback of a long message) must fit
 AMD_TIMEOUT = 15        # seconds to let mod_amd reach a verdict
 BEEP_TIMEOUT = 20       # seconds to wait for the voicemail beep (mod_avmd)
@@ -212,28 +216,34 @@ class OutboundSession:
                 pass
         return detected
 
-    async def wait_digit(self, timeout):
-        """One DTMF digit, or None on timeout. Raises CallEnded if the call died.
+    async def wait_digit(self, timeout, prompt=None):
+        """Play `prompt` (if given) and wait for one DTMF digit; None on
+        timeout. Raises CallEnded if the call died.
 
-        Implemented with play_and_get_digits, NOT by waiting for DTMF events:
-        loopback channels (the §16 test path) never emit DTMF events —
-        uuid_recv_dtmf only queues the digit into the channel input queue,
-        which only a digit-reading application consumes. play_and_get_digits
-        also picks up digits already queued during the message (barge-in).
+        Implemented with ONE play_and_get_digits, NOT play + wait-for-events:
+        - the prompt goes in as the PAGD file, so a digit BARGES IN — the
+          announcement stops mid-word and the digit acts immediately (separate
+          playback isn't interruptible: «натиснув 2 — нічого не відбувалось»);
+        - loopback channels (the §16 test path) never emit DTMF events —
+          uuid_recv_dtmf only queues the digit into the channel input queue,
+          which only a digit-reading application consumes; PAGD also picks up
+          digits already queued during a previous prompt;
+        - the self.dtmf event queue is deliberately NOT consulted: a digit
+          arrives BOTH as an event and in the channel input queue, and reading
+          both sources made the same press count twice (a stale event digit
+          would instantly eat the next round).
         """
         if self.ended.is_set():
             raise CallEnded(self.hangup_cause or "NORMAL_CLEARING")
-        if not self.dtmf.empty():  # real SIP calls also emit DTMF events
-            return self.dtmf.get_nowait()
         self._digit_seq += 1
         var = f"ivr_digit_{self._digit_seq}"
         ms = max(1000, int(timeout * 1000))
         # min max tries timeout terminators file invalid_file var regexp:
         # \d accepts any digit — branch matching is the interpreter's job
-        arg = (f"1 1 1 {ms} # silence_stream://250 silence_stream://250 "
-               f"{var} \\d")
+        arg = (f"1 1 1 {ms} # {prompt or 'silence_stream://250'} "
+               f"silence_stream://250 {var} \\d")
         event = await self.execute("play_and_get_digits", arg,
-                                   timeout=timeout + 30)
+                                   timeout=timeout + 60)
         digit = (event or {}).get(f"variable_{var}")
         if digit is None:  # event lacked channel vars — ask the engine directly
             body = (await self.api(f"uuid_getvar {self.uuid} {var}")).strip()
@@ -373,16 +383,15 @@ async def run_flow(session, flow, prompt_files, on_digit=None,
 
             elif ntype == "menu":
                 branch = None
+                announce = (prompt_files[node["prompt"]]
+                            if node.get("prompt") else None)
                 # max_repeats = how many extra waiting rounds after the first.
-                # The announcement replays on EVERY round: without it the
-                # repeat rounds are dead air (play_and_get_digits only plays
-                # silence_stream) and the callee hangs up. Digits pressed
-                # during the announcement are queued and picked up right after
-                # (wait_digit drains the DTMF queue first).
+                # The announcement replays on EVERY round (otherwise repeat
+                # rounds are dead air) and goes through wait_digit so a digit
+                # interrupts it mid-word (barge-in).
                 for _attempt in range(int(node.get("max_repeats", 0)) + 1):
-                    if node.get("prompt"):
-                        await session.play(prompt_files[node["prompt"]])
-                    digit = await session.wait_digit(int(node["timeout_sec"]))
+                    digit = await session.wait_digit(int(node["timeout_sec"]),
+                                                     prompt=announce)
                     if digit is None:
                         continue
                     outcome["dtmf"] += digit
@@ -457,6 +466,10 @@ async def run_call(session, ctx):
             return _flow_outcome(amd_result=verdict, amd_action=action)
         # CONTINUE (HUMAN / NOTSURE) falls through to the normal flow
 
+    try:
+        await session.play(f"silence_stream://{LEAD_IN_MS}")
+    except CallEnded:
+        return _flow_outcome(amd_result=verdict)
     outcome = await run_flow(session, ctx.flow, ctx.prompt_files,
                              operators=ctx.operators,
                              ring_timeout=ctx.ring_timeout,

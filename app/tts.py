@@ -70,16 +70,19 @@ def synthesize_native(text, voice, out_path, lang=DEFAULT_LANG,
     return out_path
 
 
-def synthesize_telephony(text, voice, native_path, tel_path, **params):
+def synthesize_telephony(text, voice, native_path, tel_path,
+                         lead_in=LEAD_IN_SECONDS, **params):
     """Render `text` and produce a telephony-ready WAV at tel_path.
 
     The WAV is guaranteed to be 8000 Hz, mono, 16-bit PCM (verified before
-    returning) and starts with LEAD_IN_SECONDS of silence so the callee has
-    time to bring the phone to their ear. The full-quality native render is
-    left at native_path. Returns tel_path.
+    returning) and starts with `lead_in` seconds of silence. The default suits
+    the single-WAV PoC path (&playback right at answer); IVR prompts are
+    rendered with lead_in=0 — the dead air between menu rounds reads as «не
+    працює», so the IVR plays one silence_stream lead-in itself instead.
+    The full-quality native render is left at native_path. Returns tel_path.
     """
     synthesize_native(text, voice, native_path, **params)
-    resample(native_path, tel_path, TARGET_RATE, lead_in=LEAD_IN_SECONDS)
+    resample(native_path, tel_path, TARGET_RATE, lead_in=lead_in)
     _verify(tel_path)
     logger.info("Synthesized telephony WAV: %s", tel_path)
     return tel_path

@@ -28,7 +28,9 @@ class FakeSession:
             raise ivr.CallEnded("NORMAL_CLEARING")
         self.played.append(path)
 
-    async def wait_digit(self, timeout):
+    async def wait_digit(self, timeout, prompt=None):
+        if prompt:  # PAGD грає анонс сам (barge-in); фейк рахує його як play
+            await self.play(prompt)
         if not self.digits:
             return None
         digit = self.digits.pop(0)
@@ -208,7 +210,9 @@ async def test_amd_disabled_runs_flow_directly():
     session = FakeSession(digits=[])
     ctx = make_ctx(amd_enabled=False)
     outcome = await ivr.run_call(session, ctx)
-    assert session.played[0] == "/a/main.wav"  # flow ran
+    # перед потоком — початкова тиша (ear-to-phone + медіа-реузгодження)
+    assert session.played[0] == f"silence_stream://{ivr.LEAD_IN_MS}"
+    assert session.played[1] == "/a/main.wav"  # flow ran
     assert outcome["amd_result"] is None
 
 

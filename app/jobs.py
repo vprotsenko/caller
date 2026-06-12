@@ -147,8 +147,8 @@ async def media_reneg_after_answer(client, call_uuid):
        contractually two-way again; smode stays SENDONLY, so FS keeps sending.
 
     On healthy trunks both re-INVITEs are no-ops (sendrecv offer/answer). The
-    WAV's LEAD_IN silence covers the renegotiation. Best-effort: a failure
-    here must never kill the call.
+    IVR's initial silence_stream lead-in (ivr.run_call) covers the
+    renegotiation. Best-effort: a failure here must never kill the call.
     """
     try:
         r1 = await client.api(f"uuid_media_reneg {call_uuid}")
@@ -207,7 +207,9 @@ def outcome_status(outcome):
 
 
 def prompt_path(text, voice):
-    digest = hashlib.sha1(f"{text}|{voice}|{tts.DEFAULT_LANG}".encode()).hexdigest()[:16]
+    # "|lead0" відрізняє промпти без вшитого lead-in від старого кешу з ним
+    digest = hashlib.sha1(
+        f"{text}|{voice}|{tts.DEFAULT_LANG}|lead0".encode()).hexdigest()[:16]
     return os.path.join(AUDIO_DIR, f"prompt_{digest}.wav")
 
 
@@ -215,14 +217,17 @@ def prerender_prompts(flow):
     """Synthesize every flow prompt to a telephony WAV (cache by hash).
 
     Returns {prompt_name: wav_path}. Raises if any synthesis fails — the
-    campaign must not start half-mute (§5)."""
+    campaign must not start half-mute (§5). Prompts carry NO lead-in silence:
+    between menu rounds it reads as dead air; the initial ear-to-phone pause
+    is played by the IVR itself (ivr.run_call, silence_stream)."""
     files = {}
     for name, prompt in flow["prompts"].items():
         text = normalize_text(prompt["text"])
         path = prompt_path(text, prompt["voice"])
         if not os.path.isfile(path):
             native = path + ".native.wav"
-            tts.synthesize_telephony(text, prompt["voice"], native, path)
+            tts.synthesize_telephony(text, prompt["voice"], native, path,
+                                     lead_in=0.0)
             try:
                 os.remove(native)
             except OSError:
