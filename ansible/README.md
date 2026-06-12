@@ -1,7 +1,7 @@
 # Ansible — deploying and operating Dialer 2.0
 
-The host is **Linux with a public IP** (a SIP/RTP requirement; real calls do
-not work on macOS). Set it in [inventory.ini](inventory.ini).
+The host is **Linux with a public IP** (a SIP/RTP requirement). Set it in
+[inventory.ini](inventory.ini).
 `ansible.cfg` keeps one SSH connection for the whole playbook (ControlMaster)
 + pipelining — less overhead per task.
 

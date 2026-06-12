@@ -30,9 +30,6 @@ lives in SQLite on a mounted volume. One campaign at a time, but up to
 cp .env.example .env        # WEB_PASSWORD, ESL_PASSWORD, SIP_* (FlySIP)
 docker compose up --build   # production mode: Linux host with a public IP
 
-# local development on macOS (UI/preview/loopback; real calls do NOT work)
-docker compose -f docker-compose.yml -f docker-compose.macos.yml up --build
-
 docker compose run --rm app pytest -q              # unit tests, no FreeSWITCH
 docker compose run --rm app pytest tests/test_flow.py -q   # one file
 docker compose run --rm app pytest -k announce -q           # by pattern
@@ -144,8 +141,7 @@ A process restart marks the campaign `interrupted`; resume is explicit only
   `fs/sip_profiles/external/gw_*.xml` are secret and gitignored. Never commit
   them under any circumstances.
 - **`network_mode: host`** for FreeSWITCH; real calls work only on Linux with
-  a public IP. On macOS UI/preview/loopback work, real audio does not. This is
-  not a bug in your code.
+  a public IP.
 - **event_socket listens on 127.0.0.1 only**, password from `.env`.
 - **Ukrainian stays canonical**: spoken TTS content (`flow.DIGIT_WORDS`,
   `ANNOUNCE_TEMPLATES`, `DEFAULT_*_TEXT`) is ALWAYS Ukrainian — callees hear
@@ -163,10 +159,6 @@ A process restart marks the campaign `interrupted`; resume is explicit only
   shell commands in `fs/vars.xml` contain no inner quotes and no `&&` (the
   XML entity `&amp;` is not decoded either) — only `if/then/fi` and
   `${VAR:-default}`.
-- **The macOS override shares a netns** (`app` has
-  `network_mode: service:freeswitch`): `docker compose restart app` is safe,
-  but restarting freeswitch destroys the netns and app loses ESL/port 8000 —
-  bring both up (`down` + `up`). No such effect on Linux.
 - **`fs_cli` inside the container** needs `-p "$ESL_PASSWORD"`.
 - Call diagnostics: `mod_logfile` + `sip-trace=yes` on the external profile
   (without them the safarov image starts with `-nf` and there are NO call

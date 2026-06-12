@@ -16,12 +16,6 @@ cp .env.example .env      # fill in WEB_PASSWORD, ESL_PASSWORD, SIP_* (FlySIP)
 docker compose up --build # Linux host with a public IP (production mode)
 ```
 
-Local development on macOS (no real calls — UI/preview/loopback only):
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.macos.yml up --build
-```
-
 UI: http://localhost:8000 (Basic Auth — `WEB_USER`/`WEB_PASSWORD` from `.env`).
 Three tabs: **Кампанія** (message + IVR form + dialing + live progress),
 **Налаштування** (SIP profiles + operators), **Історія** (campaigns,
