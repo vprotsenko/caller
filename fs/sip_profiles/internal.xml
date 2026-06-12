@@ -1,7 +1,7 @@
 <!-- Profile for registering operator softphones (MicroSIP/Zoiper) on
-     5060 (stage 3). Calls to operators go via a bridge to
+     5060. Calls to operators go via a bridge to
      user/<ext> through sofia_contact from the directory. Trimmed-down vanilla
-     internal, no TLS (a POC trade-off). -->
+     internal; SIP TLS is not enabled — see docs/security.md. -->
 <profile name="internal">
   <settings>
     <param name="debug" value="0"/>

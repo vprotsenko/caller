@@ -1,6 +1,6 @@
 <!-- The single SIP profile: outbound calls through a gateway (FlySIP) +
-     registrations of operator softphones (stage 3). Trimmed-down vanilla
-     external (no TLS — a POC trade-off). -->
+     registrations of operator softphones. Trimmed-down vanilla external;
+     SIP TLS is not enabled — see docs/security.md. -->
 <profile name="external">
   <gateways>
     <X-PRE-PROCESS cmd="include" data="external/*.xml"/>

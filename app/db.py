@@ -5,10 +5,11 @@ Patterns inherited from v1: one file on a mounted volume (DB_DIR), one shared
 connection guarded by a lock (one campaign at a time + 1.5 s UI polling =
 trivial contention), WAL mode, counters as a GROUP BY over campaign_number.
 
-SECURITY: a SIP profile stores its password in PLAINTEXT here (deliberate POC
-trade-off — no TLS either). It is never returned to the browser
+SECURITY: a SIP profile stores its password in PLAINTEXT here — FreeSWITCH
+needs the cleartext for digest auth, so the mitigation is containment, not
+hashing (docs/security.md). It is never returned to the browser
 (`public_profile` drops it; the API reports only `password_set`) and never
-logged. Operator SIP passwords (stage 3) get the same treatment. Keep it that
+logged. Operator SIP passwords get the same treatment. Keep it that
 way; the data/ volume must stay as protected as .env.
 """
 

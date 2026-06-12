@@ -1,8 +1,5 @@
 # Production configuration: Linux host with a public IP, host networking for
 # both services (SIP/RTP must see the real IP; ESL on 127.0.0.1 is shared).
-# Real calls do NOT work on macOS Docker Desktop — for local development
-# there is docker-compose.macos.yml:
-#   docker compose -f docker-compose.yml -f docker-compose.macos.yml up
 services:
   freeswitch:
     # Default — a prebuilt image (works out of the box). For real AMD, build an
@@ -10,7 +7,6 @@ services:
     #   FREESWITCH_IMAGE=caller-freeswitch:amd
     # Without mod_amd the app degrades gracefully (answer = HUMAN, no hangup).
     image: ${FREESWITCH_IMAGE:-safarov/freeswitch:1.10.12}
-    platform: linux/amd64
     network_mode: host
     environment:
       # The ESL password is mandatory: event_socket gives full control over the engine
